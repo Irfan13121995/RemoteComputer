@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>RemoteDesk Pro — Self-Hosted Remote Desktop Suite</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖥️</text></svg>" />
+</head>
+<body>
+
+  <div id="app-root">
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         VIEW A: HUB DASHBOARD (Multi-Tab TeamViewer & Personal-NAS Suite)
+         ══════════════════════════════════════════════════════════════════════ -->
+    <div id="hub-view" class="view-section">
+      
+      <!-- Top App Bar -->
+      <header class="hub-header">
+        <div class="brand-wrapper">
+          <div class="brand-icon-box">🖥️</div>
+          <div>
+            <div class="brand-title">RemoteDesk Pro</div>
+            <div class="brand-subtitle">Self-Hosted Remote Suite</div>
+          </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="hub-nav-tabs">
+          <button class="hub-nav-tab active" data-tab="remote">
+            <span>🔀</span> Remote Control
+          </button>
+          <button class="hub-nav-tab" data-tab="files">
+            <span>📁</span> File Manager
+          </button>
+          <button class="hub-nav-tab" data-tab="terminal">
+            <span>💻</span> Terminal
+          </button>
+          <button class="hub-nav-tab" data-tab="diagnostics">
+            <span>📊</span> Task Manager
+          </button>
+          <button class="hub-nav-tab" data-tab="addressbook">
+            <span>📖</span> Address Book
+          </button>
+          <button class="hub-nav-tab" data-tab="settings">
+            <span>⚙️</span> Settings
+          </button>
+        </nav>
+
+        <!-- Header Actions -->
+        <div class="header-actions">
+          <button id="theme-toggle-btn" class="icon-action-btn" title="Toggle Light/Dark Theme">
+            <span id="theme-icon">🌙</span>
+          </button>
+          <div class="status-indicator">
+            <span id="hub-status-dot" class="status-dot"></span>
+            <span id="hub-status-text" style="font-size: 12px; font-weight: 600;">Host Ready</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Main Content Area with Dynamic Tab Panes -->
+      <main class="hub-content-container">
+        
+        <!-- ── TAB 1: REMOTE CONTROL DUAL-CARD HUB ── -->
+        <div id="pane-remote" class="hub-tab-pane">
+          <div class="hub-grid">
+
+            <!-- LEFT CARD: ALLOW REMOTE CONTROL -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Allow Remote Control</h2>
+                  <p class="card-subtitle">Share this Partner ID and Password to allow remote connections to this computer.</p>
+                </div>
+              </div>
+
+              <!-- Credentials Box -->
+              <div class="credential-box">
+                <!-- Your ID -->
+                <div class="credential-row">
+                  <span class="badge-tag id-tag">Your ID</span>
+                  <div class="credential-value-wrapper">
+                    <span id="host-machine-id" class="credential-value">... ... ...</span>
+                    <button id="btn-copy-id" class="icon-action-btn" title="Copy Partner ID">📋</button>
+                  </div>
+                </div>
+
+                <!-- Password / PIN -->
+                <div class="credential-row">
+                  <span class="badge-tag pass-tag">Password</span>
+                  <div class="credential-value-wrapper">
+                    <span id="host-pin-display" class="credential-value">••••••</span>
+                    <button id="btn-regenerate-pin" class="icon-action-btn" title="Generate New Password">🔄</button>
+                    <button id="btn-copy-pin" class="icon-action-btn" title="Copy Password">📋</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Unattended Access & Host Status -->
+              <div class="feature-list">
+                <div class="feature-item">
+                  <div class="feature-item-left">
+                    <span>🖥️</span>
+                    <span>Active Display Bounds</span>
+                  </div>
+                  <span id="host-display-info" class="font-mono" style="font-weight: 600; color: var(--accent);">3840x2160 (Display 1)</span>
+                </div>
+
+                <div class="feature-item">
+                  <div class="feature-item-left">
+                    <span>🔒</span>
+                    <span>Encrypted TLS/WSS Enclave</span>
+                  </div>
+                  <span class="font-mono" style="color: var(--green); font-weight: 600;">Active</span>
+                </div>
+
+                <div class="feature-item">
+                  <div class="feature-item-left">
+                    <span>⚡</span>
+                    <span>Unattended LAN Access</span>
+                  </div>
+                  <label class="switch-wrap">
+                    <input type="checkbox" id="unattended-toggle" checked />
+                    <span class="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- RIGHT CARD: CONTROL REMOTE COMPUTER -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Control Remote Computer</h2>
+                  <p class="card-subtitle">Enter partner ID or IP address to view and control a remote machine.</p>
+                </div>
+              </div>
+
+              <!-- Form Inputs -->
+              <form id="connect-form" onsubmit="event.preventDefault();" style="display: flex; flex-direction: column; gap: 14px;">
+                
+                <!-- Partner ID / Host Address Input -->
+                <div class="form-group">
+                  <label class="form-label" for="partner-id-input">Partner ID or Host Address</label>
+                  <input id="partner-id-input" type="text" class="input font-mono" placeholder="e.g. 349 443 493 or localhost:8000" autocomplete="off" />
+                </div>
+
+                <!-- Mode Selection -->
+                <div class="form-group">
+                  <label class="form-label">Connection Mode</label>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <label class="credential-row" style="cursor: pointer; padding: 10px;">
+                      <input type="radio" name="conn-mode" value="remote-control" checked style="accent-color: var(--accent);" />
+                      <span style="font-weight: 600; font-size: 13px;">🖥️ Remote Control</span>
+                    </label>
+                    <label class="credential-row" style="cursor: pointer; padding: 10px;">
+                      <input type="radio" name="conn-mode" value="view-only" style="accent-color: var(--accent);" />
+                      <span style="font-weight: 600; font-size: 13px;">👁️ View Only</span>
+                    </label>
+                  </div>
+                </div>
+
+                <!-- Partner Password -->
+                <div class="form-group">
+                  <label class="form-label" for="partner-password-input">Partner Password / PIN</label>
+                  <input id="partner-password-input" type="password" class="input font-mono" placeholder="Enter remote PIN or password" autocomplete="current-password" />
+                </div>
+
+                <div id="connect-error" style="color: var(--red); font-size: 13px; font-weight: 500; min-height: 18px;"></div>
+
+                <!-- Primary Action Button -->
+                <button type="submit" id="btn-connect-partner" class="btn-primary">
+                  <span>🚀</span> Connect to Partner
+                </button>
+              </form>
+
+              <!-- Quick Connect Pills -->
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Quick Connect:</span>
+                <button class="icon-action-btn quick-host-pill" data-host="localhost:8000" style="width: auto; padding: 4px 10px; font-size: 11px; font-weight: 600;">This Host (Localhost)</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ── TAB 2: FILE MANAGER ── -->
+        <div id="pane-files" class="hub-tab-pane hidden">
+          <div class="fm-layout">
+            <div class="fm-toolbar">
+              <div class="fm-drives-bar" id="fm-drives-list">
+                <!-- Populated dynamically: C:\, D:\, Home, Desktop, Downloads -->
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button id="btn-fm-new-folder" class="btn-secondary">➕ New Folder</button>
+                <label class="btn-primary" style="width: auto; cursor: pointer;">
+                  <span>📤</span> Upload File
+                  <input type="file" id="fm-file-input" style="display: none;" />
+                </label>
+                <button id="btn-fm-refresh" class="icon-action-btn" title="Refresh">🔄</button>
+              </div>
+            </div>
+
+            <!-- Breadcrumbs -->
+            <div class="fm-breadcrumb-bar">
+              <span>📁</span>
+              <span id="fm-current-path" style="flex: 1; word-break: break-all;">Loading...</span>
+              <button id="btn-fm-up" class="btn-secondary" style="padding: 4px 10px; font-size: 11px;">⬆ Parent Folder</button>
+            </div>
+
+            <!-- File Table -->
+            <div class="fm-table-container">
+              <table class="fm-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Size</th>
+                    <th>Modified</th>
+                    <th style="text-align: right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="fm-table-body">
+                  <!-- File rows populated dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── TAB 3: REMOTE TERMINAL ── -->
+        <div id="pane-terminal" class="hub-tab-pane hidden">
+          <div class="terminal-window">
+            <div class="terminal-header">
+              <span>💻 Interactive Shell (<span id="term-shell-name">PowerShell</span>)</span>
+              <div style="display: flex; gap: 8px;">
+                <button id="btn-term-clear" class="btn-secondary" style="padding: 3px 8px; font-size: 11px;">Clear</button>
+                <button id="btn-term-reconnect" class="btn-secondary" style="padding: 3px 8px; font-size: 11px;">Reconnect</button>
+              </div>
+            </div>
+            <div id="terminal-output" class="terminal-output"></div>
+            <form id="terminal-form" class="terminal-input-bar">
+              <span class="terminal-prompt">&gt;</span>
+              <input id="terminal-input" type="text" class="terminal-input" placeholder="Type a command (e.g. dir, Get-Process, ipconfig)..." autocomplete="off" />
+              <button type="submit" class="btn-primary" style="width: auto; padding: 6px 14px; font-size: 12px;">Run</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- ── TAB 4: TASK MANAGER & DIAGNOSTICS ── -->
+        <div id="pane-diagnostics" class="hub-tab-pane hidden">
+          
+          <!-- Telemetry Gauges -->
+          <div class="telemetry-grid">
+            <div class="telemetry-card">
+              <span class="form-label">CPU Usage</span>
+              <div id="diag-cpu-val" class="telemetry-val" style="color: var(--accent);">-- %</div>
+              <span id="diag-cpu-cores" style="font-size: 11px; color: var(--text-secondary);">-- Cores</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="form-label">RAM Usage</span>
+              <div id="diag-ram-val" class="telemetry-val" style="color: var(--purple);">-- %</div>
+              <span id="diag-ram-details" style="font-size: 11px; color: var(--text-secondary);">-- GB Used</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="form-label">Network I/O</span>
+              <div id="diag-net-val" class="telemetry-val" style="color: var(--green);">-- KB/s</div>
+              <span id="diag-net-details" style="font-size: 11px; color: var(--text-secondary);">Live Bandwidth</span>
+            </div>
+
+            <div class="telemetry-card">
+              <span class="form-label">System Uptime</span>
+              <div id="diag-uptime-val" class="telemetry-val" style="color: var(--orange);">--</div>
+              <span id="diag-os-details" style="font-size: 11px; color: var(--text-secondary);">--</span>
+            </div>
+          </div>
+
+          <!-- Power Controls & Process List -->
+          <div class="card" style="padding: 20px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <h3 style="font-size: 15px; font-weight: 800;">Running Processes</h3>
+                <input id="process-search" type="text" class="input font-mono" placeholder="Search processes..." style="width: 220px; padding: 6px 12px; font-size: 12px;" />
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn-secondary btn-power" data-power="lock">🔒 Lock Host</button>
+                <button class="btn-secondary btn-power" data-power="sleep">🌙 Sleep</button>
+                <button class="btn-secondary btn-power" data-power="restart" style="color: var(--yellow);">🔄 Reboot</button>
+              </div>
+            </div>
+
+            <div class="process-table-container" style="margin-top: 12px;">
+              <table class="fm-table">
+                <thead>
+                  <tr>
+                    <th>PID</th>
+                    <th>Name</th>
+                    <th>User</th>
+                    <th>CPU %</th>
+                    <th>Memory</th>
+                    <th style="text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="process-table-body">
+                  <!-- Populated dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ── TAB 5: ADDRESS BOOK ── -->
+        <div id="pane-addressbook" class="hub-tab-pane hidden">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">Saved Computers & Favorites</h2>
+                <p class="card-subtitle">Quickly connect to your frequently accessed machines.</p>
+              </div>
+              <button id="btn-add-contact" class="btn-primary" style="width: auto;">➕ Add Machine</button>
+            </div>
+
+            <div id="addressbook-list" class="addr-grid">
+              <!-- Cards populated dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- ── TAB 6: SETTINGS ── -->
+        <div id="pane-settings" class="hub-tab-pane hidden">
+          <div class="card" style="max-width: 680px; margin: 0 auto; width: 100%;">
+            <div class="card-header">
+              <div>
+                <h2 class="card-title">Stream & Security Settings</h2>
+                <p class="card-subtitle">Configure video codec, performance presets, and accessibility.</p>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 16px;">
+              <div class="feature-item">
+                <div>
+                  <div style="font-weight: 600;">Image Encoding Format</div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">WebP for low bandwidth; JPEG for low CPU</div>
+                </div>
+                <select id="hub-setting-format" class="tb-select" style="min-width: 140px;">
+                  <option value="webp" selected>WebP (Recommended)</option>
+                  <option value="jpeg">JPEG</option>
+                </select>
+              </div>
+
+              <div class="feature-item">
+                <div>
+                  <div style="font-weight: 600;">Quality: <span id="hub-val-quality" style="color: var(--accent);">70%</span></div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">Visual quality vs network bitrate</div>
+                </div>
+                <input id="hub-setting-quality" type="range" min="20" max="95" value="70" style="accent-color: var(--accent);" />
+              </div>
+
+              <div class="feature-item">
+                <div>
+                  <div style="font-weight: 600;">Frame Rate: <span id="hub-val-fps" style="color: var(--accent);">30 FPS</span></div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">Target capture updates per second</div>
+                </div>
+                <input id="hub-setting-fps" type="range" min="10" max="60" step="5" value="30" style="accent-color: var(--accent);" />
+              </div>
+
+              <div class="feature-item">
+                <div>
+                  <div style="font-weight: 600;">Display Scaling</div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">How remote screen fits browser viewport</div>
+                </div>
+                <select id="hub-setting-scaling" class="tb-select" style="min-width: 140px;">
+                  <option value="fit" selected>Fit Aspect (Letterbox)</option>
+                  <option value="fill">Fill / Stretch Window</option>
+                  <option value="original">Original 1:1</option>
+                </select>
+              </div>
+
+              <div class="feature-item">
+                <div>
+                  <div style="font-weight: 600;">Translate Mac Command (⌘) to Ctrl</div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">Seamlessly map shortcuts on macOS client</div>
+                </div>
+                <input type="checkbox" id="hub-setting-map-cmd" checked style="accent-color: var(--accent);" />
+              </div>
+            </div>
+
+            <button id="btn-save-hub-settings" class="btn-primary" style="margin-top: 10px;">
+              Save & Apply Configuration
+            </button>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- Bottom Status Bar -->
+      <footer class="hub-footer">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span>Ready to connect (secure TLS/WSS enclave)</span>
+        </div>
+        <div id="hub-ip-list" class="font-mono" style="font-size: 11px; color: var(--text-muted);">
+          LAN: Loading local IPs...
+        </div>
+        <div>
+          <span>RemoteDesk Pro v1.0.0</span>
+        </div>
+      </footer>
+
+    </div>
+
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         VIEW B: INTERACTIVE REMOTE DESKTOP SESSION (Full Viewport Canvas)
+         ══════════════════════════════════════════════════════════════════════ -->
+    <div id="session-view" class="view-section hidden">
+      
+      <canvas id="remote-canvas" tabindex="0"></canvas>
+
+      <!-- Canvas Drag-and-Drop Dropzone -->
+      <div id="drop-overlay" class="hidden">
+        <span>📥 Drop files here to upload to Host Desktop</span>
+      </div>
+
+      <!-- Floating Glassmorphic Top Toolbar -->
+      <div id="session-toolbar">
+        
+        <!-- Live Metrics -->
+        <div style="display: flex; align-items: center; gap: 5px;">
+          <span id="session-status-dot" class="status-dot"></span>
+          <span id="session-latency-badge" class="tb-badge" title="Round Trip Latency">-- ms</span>
+          <span id="session-fps-badge" class="tb-badge" title="Frame Rate">-- FPS</span>
+          <span id="session-bandwidth-badge" class="tb-badge" title="Bandwidth Usage">-- KB/s</span>
+          <span id="recording-badge" class="tb-badge hidden" style="border-color: var(--red); color: var(--red);">
+            <span class="rec-pulse"></span> REC
+          </span>
+        </div>
+
+        <div class="tb-divider"></div>
+
+        <!-- Display Selector -->
+        <select id="session-monitor-select" class="tb-select" title="Active Monitor">
+          <option value="1">Display 1 (Primary)</option>
+        </select>
+
+        <!-- Quality Preset -->
+        <select id="session-quality-select" class="tb-select" title="Stream Quality Preset">
+          <option value="high">High (60 FPS)</option>
+          <option value="balanced" selected>Balanced (30 FPS)</option>
+          <option value="low">Low Bandwidth (20 FPS)</option>
+        </select>
+
+        <div class="tb-divider"></div>
+
+        <!-- Interactive Controls -->
+        <button id="btn-session-pointer-lock" class="tb-btn" title="Lock Mouse Cursor (L)">
+          <span>🔒</span> Lock Mouse
+        </button>
+
+        <button id="btn-session-fullscreen" class="tb-btn" title="Toggle Fullscreen (F)">
+          <span>⛶</span> Fullscreen
+        </button>
+
+        <button id="btn-session-screenshot" class="tb-btn" title="Take Instant Screenshot (PNG)">
+          <span>📸</span>
+        </button>
+
+        <button id="btn-session-record" class="tb-btn" title="Record Session Video (.webm)">
+          <span>⏺️</span> Record
+        </button>
+
+        <button id="btn-session-vk" class="tb-btn" title="Toggle On-Screen Keyboard">
+          <span>⌨</span>
+        </button>
+
+        <button id="btn-session-chat" class="tb-btn" title="Live In-Session Chat">
+          <span>💬</span> Chat
+        </button>
+
+        <!-- Macro Actions Dropdown Trigger -->
+        <div style="position: relative;">
+          <button id="btn-session-actions" class="tb-btn" title="Quick Actions & Macros">
+            <span>⚡</span> Actions
+          </button>
+          <div id="session-actions-dropdown" class="dropdown-menu hidden">
+            <button class="dropdown-item" data-action="ctrl_alt_del">
+              <span>🛡️</span> Ctrl + Alt + Del
+            </button>
+            <button class="dropdown-item" data-action="ctrl_shift_esc">
+              <span>📊</span> Task Manager
+            </button>
+            <button class="dropdown-item" data-action="alt_tab">
+              <span>🔀</span> Alt + Tab
+            </button>
+            <button class="dropdown-item" data-action="win_d">
+              <span>🗔</span> Show Desktop
+            </button>
+            <button class="dropdown-item" data-action="win_e">
+              <span>📁</span> File Explorer (Win+E)
+            </button>
+            <button class="dropdown-item" data-action="win_r">
+              <span>⚡</span> Run Dialog (Win+R)
+            </button>
+            <button class="dropdown-item" data-action="win_l">
+              <span>🔒</span> Lock Host Screen
+            </button>
+            <button class="dropdown-item" data-action="escape">
+              <span>⎋</span> Escape Key
+            </button>
+            <button class="dropdown-item" data-action="copy">
+              <span>📄</span> Copy (Ctrl+C)
+            </button>
+            <button class="dropdown-item" data-action="paste">
+              <span>📋</span> Paste (Ctrl+V)
+            </button>
+          </div>
+        </div>
+
+        <button id="btn-session-clipboard" class="tb-btn" title="Virtual Clipboard Bridge">
+          <span>📋</span>
+        </button>
+
+        <!-- Exit / Disconnect Button -->
+        <button id="btn-session-disconnect" class="tb-btn danger" title="End Session & Return to Hub">
+          <span>✕</span> End Session
+        </button>
+      </div>
+
+      <!-- In-Session Live Chat Drawer -->
+      <div id="chat-drawer" class="hidden">
+        <div class="terminal-header">
+          <span>💬 In-Session Live Chat</span>
+          <button id="btn-close-chat" class="modal-close" style="width: 22px; height: 22px; font-size: 12px;">&times;</button>
+        </div>
+        <div id="chat-messages" class="chat-stream">
+          <div class="chat-bubble remote">Connected to remote session. Send a message to the host.</div>
+        </div>
+        <form id="chat-form" style="display: flex; padding: 8px; gap: 6px; border-top: 1px solid var(--border);">
+          <input id="chat-input" type="text" class="input font-mono" placeholder="Type a message..." style="padding: 6px 10px; font-size: 12px;" autocomplete="off" />
+          <button type="submit" class="btn-primary" style="width: auto; padding: 6px 12px; font-size: 12px;">Send</button>
+        </form>
+      </div>
+
+      <!-- In-Session Virtual Keyboard Drawer -->
+      <div id="vk-drawer" class="hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">On-Screen Keyboard</span>
+          <button id="btn-close-vk" class="modal-close" style="width: 20px; height: 20px; font-size: 11px;">&times;</button>
+        </div>
+        <div class="vk-row">
+          <button class="vk-key" data-key="Escape">Esc</button>
+          <button class="vk-key" data-key="F1">F1</button>
+          <button class="vk-key" data-key="F2">F2</button>
+          <button class="vk-key" data-key="F3">F3</button>
+          <button class="vk-key" data-key="F4">F4</button>
+          <button class="vk-key" data-key="F5">F5</button>
+          <button class="vk-key" data-key="F6">F6</button>
+          <button class="vk-key" data-key="F7">F7</button>
+          <button class="vk-key" data-key="F8">F8</button>
+          <button class="vk-key" data-key="F9">F9</button>
+          <button class="vk-key" data-key="F10">F10</button>
+          <button class="vk-key" data-key="F11">F11</button>
+          <button class="vk-key" data-key="F12">F12</button>
+          <button class="vk-key" data-key="Delete">Del</button>
+        </div>
+        <div class="vk-row">
+          <button class="vk-key" data-key="Tab">Tab</button>
+          <button class="vk-key" data-key="Control">Ctrl</button>
+          <button class="vk-key" data-key="Meta">Win</button>
+          <button class="vk-key" data-key="Alt">Alt</button>
+          <button class="vk-key" data-key=" " style="flex: 1;">Space</button>
+          <button class="vk-key" data-key="Enter" style="min-width: 60px;">Enter ↵</button>
+          <button class="vk-key" data-key="Backspace">⌫</button>
+        </div>
+        <div class="vk-row">
+          <button class="vk-key" data-key="ArrowUp">▲</button>
+          <button class="vk-key" data-key="ArrowDown">▼</button>
+          <button class="vk-key" data-key="ArrowLeft">◄</button>
+          <button class="vk-key" data-key="ArrowRight">►</button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       MODALS: CLIPBOARD, ADD CONTACT, NEW FOLDER
+       ══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Modal: Virtual Clipboard Bridge -->
+  <div id="clipboard-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2><span>📋</span> Virtual Clipboard Bridge</h2>
+        <button class="modal-close">&times;</button>
+      </div>
+      <p style="font-size: 13px; color: var(--text-secondary);">
+        Directly inject text into the remote host clipboard, or fetch the current host clipboard content.
+      </p>
+
+      <div class="form-group">
+        <textarea id="clipboard-textarea" class="textarea font-mono" rows="6" placeholder="Paste or type text to synchronize with remote host..."></textarea>
+      </div>
+
+      <div style="display: flex; gap: 12px;">
+        <button id="btn-copy-to-remote" class="btn-primary" style="flex: 1;">
+          <span>📤</span> Push to Remote
+        </button>
+        <button id="btn-fetch-host-clip" class="btn-secondary" style="flex: 1;">
+          <span>📥</span> Fetch from Remote
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Address Book Contact -->
+  <div id="contact-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2><span>➕</span> Add Machine to Address Book</h2>
+        <button class="modal-close">&times;</button>
+      </div>
+      <form id="contact-form" style="display: flex; flex-direction: column; gap: 12px;">
+        <div class="form-group">
+          <label class="form-label" for="contact-alias">Machine Name / Alias</label>
+          <input id="contact-alias" type="text" class="input" placeholder="e.g. Office PC, Home Server" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-id">Partner ID or IP Address</label>
+          <input id="contact-id" type="text" class="input font-mono" placeholder="e.g. 349 443 493 or 192.168.1.50:8000" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-pwd">Saved Password (Optional)</label>
+          <input id="contact-pwd" type="password" class="input font-mono" placeholder="••••••" />
+        </div>
+        <button type="submit" class="btn-primary" style="margin-top: 6px;">Save to Address Book</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <!-- JavaScript Modules -->
+  <script src="/static/js/canvas_renderer.js"></script>
+  <script src="/static/js/input_controller.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
