@@ -302,6 +302,13 @@ class RemoteDeskApp {
           }
         }
 
+        const isHttps = window.location.protocol === 'https:';
+        const secBadge = document.getElementById('hub-security-badge');
+        if (secBadge) {
+          secBadge.innerText = isHttps ? 'HTTPS (TLS)' : 'HTTP (Local)';
+          secBadge.style.color = isHttps ? 'var(--green)' : 'var(--accent)';
+        }
+
         if (data.monitors) {
           this.sessionMonitorSelect.innerHTML = '';
           data.monitors.forEach((mon) => {
