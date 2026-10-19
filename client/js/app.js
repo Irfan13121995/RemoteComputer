@@ -1,6 +1,7 @@
 /**
- * RemoteDesk Pro - Comprehensive Web Client Suite
- * Orchestrates Remote Desktop, File Manager, Terminal, Task Manager, Chat, Recording, and Address Book.
+ * RemoteDesk Pro v2.0 - Comprehensive RustDesk-Inspired Web & Desktop Client Suite
+ * Orchestrates Remote Desktop, LAN/Rendezvous Discovery, Audio Streaming, Privacy Mode,
+ * TCP Port Tunneling, File Transfer + Folder ZIP, Terminal, Task Manager, Security Policy, and Address Book.
  */
 
 class RemoteDeskApp {
@@ -19,6 +20,11 @@ class RemoteDeskApp {
     this.bandwidthBytes = 0;
     this.currentBandwidthKbps = 0;
 
+    // Session Feature States
+    this.audioMuted = true;
+    this.audioCtx = null;
+    this.privacyModeEnabled = false;
+
     // Video Recording State
     this.mediaRecorder = null;
     this.recordedChunks = [];
@@ -26,6 +32,7 @@ class RemoteDeskApp {
 
     // File Manager State
     this.currentFmPath = '';
+    this.parentFmPath = '';
     this.desktopUploadPath = '';
 
     // Task Manager Polling Interval
@@ -45,7 +52,13 @@ class RemoteDeskApp {
     this.bindSuiteTabs();
     this.startMetricsTimer();
     this.fetchHostInfo();
+    this.fetchDiscoveredPeers();
     this.loadAddressBook();
+
+    // Poll LAN Discovery peers every 12s while on Hub
+    setInterval(() => {
+      if (!this.connected) this.fetchDiscoveredPeers();
+    }, 12000);
   }
 
   // ── THEME MANAGEMENT ────────────────────────────────────────────────────────
@@ -111,9 +124,30 @@ class RemoteDeskApp {
     });
     document.getElementById('btn-copy-pin').addEventListener('click', () => {
       const pin = this.hostPinDisplay.innerText.trim();
-      navigator.clipboard.writeText(pin).then(() => this.showToast('Password copied', 'success'));
+      navigator.clipboard.writeText(pin).then(() => this.showToast('One-Time PIN copied', 'success'));
     });
     document.getElementById('btn-regenerate-pin').addEventListener('click', () => this.regeneratePin());
+
+    // Permanent Password Configuration
+    const btnSetPermPwd = document.getElementById('btn-set-perm-pwd');
+    if (btnSetPermPwd) {
+      btnSetPermPwd.addEventListener('click', () => this.promptPermanentPassword());
+    }
+
+    // Windows Auto-Start Toggle
+    const autostartToggle = document.getElementById('autostart-toggle');
+    if (autostartToggle) {
+      autostartToggle.addEventListener('change', (e) => this.toggleWindowsAutoStart(e.target.checked));
+    }
+
+    // Refresh LAN Discovered Peers
+    const btnRefreshPeers = document.getElementById('btn-refresh-peers');
+    if (btnRefreshPeers) {
+      btnRefreshPeers.addEventListener('click', () => {
+        this.fetchDiscoveredPeers();
+        this.showToast('Scanned LAN & Rendezvous peers', 'info');
+      });
+    }
 
     // Quick Connect Pills
     document.querySelectorAll('.quick-host-pill').forEach((btn) => {
@@ -130,6 +164,17 @@ class RemoteDeskApp {
     });
 
     // Session Toolbar Events
+    document.getElementById('btn-session-audio').addEventListener('click', () => {
+      this.toggleRemoteAudio();
+    });
+    document.getElementById('btn-session-privacy').addEventListener('click', () => {
+      this.togglePrivacyMode();
+    });
+    document.getElementById('btn-session-cursor').addEventListener('click', (e) => {
+      this.renderer.showRemoteCursor = !this.renderer.showRemoteCursor;
+      e.currentTarget.classList.toggle('active', this.renderer.showRemoteCursor);
+      this.showToast(`Remote cursor ${this.renderer.showRemoteCursor ? 'shown' : 'hidden'}`, 'info');
+    });
     document.getElementById('btn-session-pointer-lock').addEventListener('click', () => {
       this.input.togglePointerLock();
     });
@@ -213,7 +258,8 @@ class RemoteDeskApp {
     // Modals Close
     document.querySelectorAll('.modal-close').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        e.target.closest('.modal-overlay').classList.add('hidden');
+        const overlay = e.target.closest('.modal-overlay');
+        if (overlay) overlay.classList.add('hidden');
       });
     });
 
@@ -226,7 +272,29 @@ class RemoteDeskApp {
       this.saveContact();
     });
 
-    // Hub Settings Form
+    // TCP Tunnel Form
+    const tunnelForm = document.getElementById('tunnel-form');
+    if (tunnelForm) {
+      tunnelForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.createTunnel();
+      });
+    }
+    const btnRefreshTunnels = document.getElementById('btn-refresh-tunnels');
+    if (btnRefreshTunnels) {
+      btnRefreshTunnels.addEventListener('click', () => this.loadTunnels());
+    }
+
+    // Security & Settings Form
+    const btnSavePerms = document.getElementById('btn-save-permissions');
+    if (btnSavePerms) {
+      btnSavePerms.addEventListener('click', () => this.saveSecurityPermissions());
+    }
+    const btnRefreshLog = document.getElementById('btn-refresh-security-log');
+    if (btnRefreshLog) {
+      btnRefreshLog.addEventListener('click', () => this.loadSecuritySettings());
+    }
+
     document.getElementById('hub-setting-quality').addEventListener('input', (e) => {
       document.getElementById('hub-val-quality').innerText = `${e.target.value}%`;
     });
@@ -238,12 +306,13 @@ class RemoteDeskApp {
       const fps = parseInt(document.getElementById('hub-setting-fps').value, 10);
       const format = document.getElementById('hub-setting-format').value;
       const scaling = document.getElementById('hub-setting-scaling').value;
+      const skipStatic = document.getElementById('hub-setting-skip-static').checked;
       const mapCmd = document.getElementById('hub-setting-map-cmd').checked;
 
       this.renderer.setScalingMode(scaling);
       this.input.mapCmdToCtrl = mapCmd;
-      this.sendWs({ type: 'config', quality, fps, format });
-      this.showToast('Settings saved successfully', 'success');
+      this.sendWs({ type: 'config', quality, fps, format, skip_static: skipStatic });
+      this.showToast('Stream configuration applied', 'success');
     });
   }
 
@@ -255,33 +324,34 @@ class RemoteDeskApp {
         document.querySelectorAll('.hub-nav-tab').forEach((t) => t.classList.remove('active'));
         e.currentTarget.classList.add('active');
 
-        // Hide all panes
         document.querySelectorAll('.hub-tab-pane').forEach((p) => p.classList.add('hidden'));
 
-        // Show selected pane
         const pane = document.getElementById(`pane-${target}`);
         if (pane) {
           pane.classList.remove('hidden');
         }
 
-        // Initialize Tab Action
+        if (this.diagInterval) {
+          clearInterval(this.diagInterval);
+          this.diagInterval = null;
+        }
+
         if (target === 'files') {
           this.initFileManager();
+        } else if (target === 'tunnels') {
+          this.loadTunnels();
         } else if (target === 'terminal') {
           this.initTerminal();
         } else if (target === 'diagnostics') {
           this.initDiagnostics();
-        } else {
-          if (this.diagInterval) {
-            clearInterval(this.diagInterval);
-            this.diagInterval = null;
-          }
+        } else if (target === 'settings') {
+          this.loadSecuritySettings();
         }
       });
     });
   }
 
-  // ── HOST DISCOVERY & AUTHENTICATION ────────────────────────────────────────
+  // ── HOST DISCOVERY, RENDEZVOUS & AUTHENTICATION ─────────────────────────────
   async fetchHostInfo() {
     try {
       const res = await fetch('/api/host-info');
@@ -302,10 +372,21 @@ class RemoteDeskApp {
           }
         }
 
+        const permBadge = document.getElementById('perm-pwd-badge');
+        if (permBadge) {
+          permBadge.innerText = data.has_permanent_password ? 'Active (Unattended)' : 'Not Set';
+          permBadge.style.color = data.has_permanent_password ? 'var(--green)' : 'var(--text-muted)';
+        }
+
+        if (data.windows_integration) {
+          const autoToggle = document.getElementById('autostart-toggle');
+          if (autoToggle) autoToggle.checked = !!data.windows_integration.autostart_enabled;
+        }
+
         const isHttps = window.location.protocol === 'https:';
         const secBadge = document.getElementById('hub-security-badge');
         if (secBadge) {
-          secBadge.innerText = isHttps ? 'HTTPS (TLS)' : 'HTTP (Local)';
+          secBadge.innerText = isHttps ? 'HTTPS (TLS) + UDP 21116' : 'HTTP (Local) + UDP 21116';
           secBadge.style.color = isHttps ? 'var(--green)' : 'var(--accent)';
         }
 
@@ -325,7 +406,124 @@ class RemoteDeskApp {
     }
   }
 
+  async fetchDiscoveredPeers() {
+    try {
+      const res = await fetch('/api/discovery/peers');
+      if (!res.ok) return;
+      const data = await res.json();
+      const grid = document.getElementById('discovered-peers-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+
+      const peers = data.peers || [];
+      if (peers.length === 0) {
+        grid.innerHTML = `<div style="color:var(--text-muted);font-size:12px;">Scanning local network on UDP 21116...</div>`;
+        return;
+      }
+
+      peers.forEach((peer) => {
+        const card = document.createElement('div');
+        card.className = 'addr-card';
+        card.style.padding = '12px 16px';
+        const selfTag = peer.is_self ? `<span style="color:var(--accent);font-size:11px;font-weight:700;">(This PC)</span>` : '';
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-weight:700;font-size:14px;">🖥️ ${this.escapeHtml(peer.hostname)} ${selfTag}</div>
+              <div class="font-mono text-muted" style="font-size:12px;">ID: <strong>${this.escapeHtml(peer.machine_id)}</strong> • ${this.escapeHtml(peer.ip)}:${peer.port}</div>
+            </div>
+            <button class="btn-secondary btn-peer-connect" style="padding:5px 12px;font-size:12px;">Connect</button>
+          </div>
+        `;
+        card.querySelector('.btn-peer-connect').addEventListener('click', () => {
+          this.partnerIdInput.value = peer.machine_id;
+          this.partnerPassInput.focus();
+          this.showToast(`Selected ${peer.hostname} (${peer.machine_id})`, 'info');
+        });
+        grid.appendChild(card);
+      });
+    } catch (e) {
+      console.debug('Peer discovery error:', e);
+    }
+  }
+
+  async ensureAuthenticated() {
+    if (this.token) return true;
+    const currentPin = this.hostPinDisplay.innerText.trim();
+    if (currentPin && currentPin !== '••••••') {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: currentPin }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          this.token = data.token;
+          localStorage.setItem('rd_session_token', this.token);
+          return true;
+        }
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  async promptPermanentPassword() {
+    await this.ensureAuthenticated();
+    const pwd = prompt('Enter a Permanent Password for Unattended Access (or leave empty to clear):');
+    if (pwd === null) return;
+    try {
+      const res = await fetch('/api/security/permanent-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: JSON.stringify({ password: pwd }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        this.showToast(
+          data.has_permanent_password
+            ? 'Permanent Unattended Password saved!'
+            : 'Permanent Password cleared.',
+          'success'
+        );
+        this.fetchHostInfo();
+      } else {
+        this.showToast('Authenticate with host PIN first to set password', 'warning');
+      }
+    } catch (e) {
+      this.showToast('Failed to update permanent password', 'error');
+    }
+  }
+
+  async toggleWindowsAutoStart(enabled) {
+    await this.ensureAuthenticated();
+    try {
+      const res = await fetch('/api/windows/autostart', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: JSON.stringify({ enabled }),
+      });
+      if (res.ok) {
+        this.showToast(
+          enabled
+            ? 'Registered RemoteDesk Pro to start automatically with Windows'
+            : 'Removed from Windows startup',
+          'success'
+        );
+      }
+    } catch (e) {
+      this.showToast('Failed to update Windows startup setting', 'error');
+    }
+  }
+
   async regeneratePin() {
+    await this.ensureAuthenticated();
     try {
       const res = await fetch('/api/auth/regenerate-pin', {
         method: 'POST',
@@ -334,7 +532,7 @@ class RemoteDeskApp {
       if (res.ok) {
         const data = await res.json();
         this.hostPinDisplay.innerText = data.pin;
-        this.showToast('Regenerated new password PIN', 'success');
+        this.showToast('Regenerated new One-Time PIN', 'success');
       } else {
         this.showToast('Please authenticate first to regenerate PIN', 'warning');
       }
@@ -343,13 +541,13 @@ class RemoteDeskApp {
     }
   }
 
-  // ── CONNECT TO REMOTE PARTNER ───────────────────────────────────────────────
+  // ── CONNECT TO REMOTE PARTNER (WITH 9-DIGIT PARTNER ID RESOLUTION) ──────────
   async handleConnect() {
     const partnerId = this.partnerIdInput.value.trim();
     const password = this.partnerPassInput.value.trim();
 
     if (!password) {
-      this.connectError.innerText = 'Please enter the Partner Password or PIN.';
+      this.connectError.innerText = 'Please enter the Partner One-Time PIN or Permanent Password.';
       return;
     }
 
@@ -359,11 +557,26 @@ class RemoteDeskApp {
 
     try {
       let targetBaseUrl = window.location.origin;
-      if (partnerId.includes(':') || partnerId.includes('.')) {
+
+      // 1. If user entered IP:Port or URL directly
+      if (partnerId.includes(':') || partnerId.includes('.') || partnerId.toLowerCase().startsWith('localhost')) {
         if (!partnerId.startsWith('http://') && !partnerId.startsWith('https://')) {
           targetBaseUrl = `${window.location.protocol}//${partnerId}`;
         } else {
           targetBaseUrl = partnerId;
+        }
+      } else if (partnerId) {
+        // 2. User entered a 9-digit RustDesk-style Partner ID -> Resolve via LAN Discovery & Rendezvous Server
+        try {
+          const resLookup = await fetch(`/api/discovery/resolve?partner_id=${encodeURIComponent(partnerId)}`);
+          if (resLookup.ok) {
+            const lookupData = await resLookup.json();
+            if (lookupData.found && lookupData.url) {
+              targetBaseUrl = lookupData.url;
+            }
+          }
+        } catch (e) {
+          console.debug('Partner ID lookup fallback to origin:', e);
         }
       }
 
@@ -379,14 +592,13 @@ class RemoteDeskApp {
         this.activeHostUrl = targetBaseUrl;
         localStorage.setItem('rd_session_token', this.token);
 
-        // Check Mode
         const mode = document.querySelector('input[name="conn-mode"]:checked').value;
         this.input.setViewOnly(mode === 'view-only');
 
         this.switchToSessionView();
         this.connectWebSocket();
       } else {
-        this.connectError.innerText = data.detail || 'Authentication failed. Incorrect Password.';
+        this.connectError.innerText = data.detail || 'Authentication failed. Incorrect PIN or Password.';
       }
     } catch (err) {
       this.connectError.innerText = `Connection failed: ${err.message}`;
@@ -456,11 +668,33 @@ class RemoteDeskApp {
     if (msg.type === 'frame_meta') {
       this.lastFrameMeta = msg;
       this.renderer.setRemoteResolution(msg.width, msg.height);
+      if (typeof msg.cursor_x === 'number' && typeof msg.cursor_y === 'number') {
+        this.renderer.setRemoteCursor(msg.cursor_x, msg.cursor_y);
+      }
     } else if (msg.type === 'pong') {
       const now = performance.now();
       const rtt = Math.round(now - msg.t);
       this.currentLatency = rtt;
       this.sessionLatencyBadge.innerText = `${rtt} ms`;
+    } else if (msg.type === 'audio_frame') {
+      this.playAudioFrame(msg.data_b64);
+    } else if (msg.type === 'privacy_mode_status') {
+      this.privacyModeEnabled = !!msg.enabled;
+      const btn = document.getElementById('btn-session-privacy');
+      if (btn) btn.classList.toggle('active', this.privacyModeEnabled);
+      this.showToast(
+        this.privacyModeEnabled
+          ? '🕵️ Privacy Mode ENABLED (Remote screen blanked)'
+          : 'Privacy Mode disabled',
+        'info'
+      );
+    } else if (msg.type === 'audio_status') {
+      this.audioMuted = !!msg.muted;
+      const btn = document.getElementById('btn-session-audio');
+      if (btn) {
+        btn.classList.toggle('active', !this.audioMuted);
+        btn.innerHTML = this.audioMuted ? `<span>🔇</span> Audio` : `<span>🔊</span> Audio`;
+      }
     } else if (msg.type === 'chat_message') {
       this.appendChatMessage(msg.sender, msg.text, msg.time);
     } else if (msg.type === 'clipboard_sync') {
@@ -488,7 +722,7 @@ class RemoteDeskApp {
   startPingLoop() {
     setInterval(() => {
       if (this.connected) {
-        this.sendWs({ type: 'ping', t: performance.now() });
+        this.sendWs({ type: 'ping', t: performance.now(), last_rtt: this.currentLatency });
       }
     }, 2000);
   }
@@ -509,6 +743,42 @@ class RemoteDeskApp {
     }, 1000);
   }
 
+  // ── RUSTDESK REMOTE AUDIO & PRIVACY MODE ────────────────────────────────────
+  toggleRemoteAudio() {
+    this.audioMuted = !this.audioMuted;
+    if (!this.audioMuted && !this.audioCtx) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        this.audioCtx = new AudioContextClass();
+      }
+    }
+    this.sendWs({ type: 'audio_toggle', muted: this.audioMuted });
+  }
+
+  async playAudioFrame(b64Data) {
+    if (this.audioMuted || !this.audioCtx || !b64Data) return;
+    try {
+      const binaryStr = atob(b64Data);
+      const len = binaryStr.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      const audioBuffer = await this.audioCtx.decodeAudioData(bytes.buffer);
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.audioCtx.destination);
+      source.start(0);
+    } catch (e) {
+      console.debug('Audio decode skipped:', e);
+    }
+  }
+
+  togglePrivacyMode() {
+    this.privacyModeEnabled = !this.privacyModeEnabled;
+    this.sendWs({ type: 'privacy_mode', enabled: this.privacyModeEnabled });
+  }
+
   // ── IN-SESSION TOOLS: SCREENSHOT, RECORDING, CHAT ───────────────────────────
   takeScreenshot() {
     try {
@@ -526,7 +796,6 @@ class RemoteDeskApp {
   toggleSessionRecording() {
     const recordBtn = document.getElementById('btn-session-record');
     if (!this.isRecording) {
-      // Start Recording
       try {
         const stream = this.canvas.captureStream(30);
         this.recordedChunks = [];
@@ -550,20 +819,19 @@ class RemoteDeskApp {
         this.isRecording = true;
         this.recordingBadge.classList.remove('hidden');
         recordBtn.classList.add('active');
-        recordBtn.innerHTML = `<span>⏹️</span> Stop Rec`;
+        recordBtn.innerHTML = `<span>⏹️</span> Stop`;
         this.showToast('Session recording started', 'info');
       } catch (e) {
         this.showToast('Screen recording not supported in this browser', 'error');
       }
     } else {
-      // Stop Recording
       if (this.mediaRecorder) {
         this.mediaRecorder.stop();
       }
       this.isRecording = false;
       this.recordingBadge.classList.add('hidden');
       recordBtn.classList.remove('active');
-      recordBtn.innerHTML = `<span>⏺️</span> Record`;
+      recordBtn.innerHTML = `<span>⏺️</span> Rec`;
     }
   }
 
@@ -580,6 +848,7 @@ class RemoteDeskApp {
   }
 
   async uploadDroppedFiles(files) {
+    await this.ensureAuthenticated();
     if (!this.desktopUploadPath) {
       try {
         const res = await fetch(`${this.activeHostUrl}/api/files/desktop-path`, {
@@ -613,8 +882,9 @@ class RemoteDeskApp {
     }
   }
 
-  // ── REMOTE FILE MANAGER ─────────────────────────────────────────────────────
+  // ── REMOTE FILE MANAGER + FOLDER ZIP ARCHIVE ────────────────────────────────
   async initFileManager() {
+    await this.ensureAuthenticated();
     try {
       const res = await fetch(`${this.activeHostUrl}/api/files/drives`, {
         headers: { 'Authorization': `Bearer ${this.token}` },
@@ -624,7 +894,6 @@ class RemoteDeskApp {
         const drivesBar = document.getElementById('fm-drives-list');
         drivesBar.innerHTML = '';
 
-        // Shortcuts & Drives
         const allItems = [...(data.shortcuts || []), ...(data.drives || [])];
         allItems.forEach((d) => {
           const btn = document.createElement('button');
@@ -642,21 +911,22 @@ class RemoteDeskApp {
       this.showToast('Failed to load file drives', 'error');
     }
 
-    // Up button
     document.getElementById('btn-fm-up').onclick = () => {
       if (this.parentFmPath) this.loadDirectory(this.parentFmPath);
     };
-    // Refresh button
     document.getElementById('btn-fm-refresh').onclick = () => {
       this.loadDirectory(this.currentFmPath);
     };
-    // Upload file input
-    document.getElementById('fm-file-input').onchange = (e) => {
-      if (e.target.files && e.target.files[0]) {
-        this.uploadFmFile(e.target.files[0]);
+    document.getElementById('btn-fm-zip-current').onclick = () => {
+      if (this.currentFmPath) this.downloadFolderZip(this.currentFmPath);
+    };
+    document.getElementById('fm-file-input').onchange = async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        for (const f of e.target.files) {
+          await this.uploadFmFile(f);
+        }
       }
     };
-    // New Folder
     document.getElementById('btn-fm-new-folder').onclick = () => {
       const name = prompt('Enter new folder name:');
       if (name) this.createFmFolder(name);
@@ -681,7 +951,7 @@ class RemoteDeskApp {
           const tr = document.createElement('tr');
           tr.className = 'fm-row';
           const icon = item.is_dir ? '📁' : '📄';
-          const sizeStr = item.is_dir ? '--' : this.formatBytes(item.size);
+          const sizeStr = item.is_dir ? 'Folder' : this.formatBytes(item.size);
           const dateStr = new Date(item.modified * 1000).toLocaleDateString();
 
           tr.innerHTML = `
@@ -689,12 +959,13 @@ class RemoteDeskApp {
             <td class="font-mono text-muted">${sizeStr}</td>
             <td class="text-muted">${dateStr}</td>
             <td style="text-align: right;">
-              ${!item.is_dir ? `<button class="icon-action-btn btn-dl" title="Download">⬇️</button>` : ''}
+              ${item.is_dir
+                ? `<button class="icon-action-btn btn-zip" title="Download Folder as .ZIP">📦</button>`
+                : `<button class="icon-action-btn btn-dl" title="Download File">⬇️</button>`}
               <button class="icon-action-btn btn-del" title="Delete" style="color:var(--red);">🗑️</button>
             </td>
           `;
 
-          // Double click folder to open
           tr.addEventListener('click', (e) => {
             if (e.target.closest('.icon-action-btn')) return;
             if (item.is_dir) {
@@ -702,7 +973,6 @@ class RemoteDeskApp {
             }
           });
 
-          // Download handler
           const dlBtn = tr.querySelector('.btn-dl');
           if (dlBtn) {
             dlBtn.addEventListener('click', () => {
@@ -710,7 +980,13 @@ class RemoteDeskApp {
             });
           }
 
-          // Delete handler
+          const zipBtn = tr.querySelector('.btn-zip');
+          if (zipBtn) {
+            zipBtn.addEventListener('click', () => {
+              this.downloadFolderZip(item.path);
+            });
+          }
+
           tr.querySelector('.btn-del').addEventListener('click', async () => {
             if (confirm(`Are you sure you want to delete ${item.name}?`)) {
               await fetch(`${this.activeHostUrl}/api/files/delete`, {
@@ -730,12 +1006,24 @@ class RemoteDeskApp {
     }
   }
 
+  downloadFolderZip(folderPath) {
+    this.showToast('Compressing folder to .zip archive...', 'info');
+    window.open(`${this.activeHostUrl}/api/files/download-zip?path=${encodeURIComponent(folderPath)}&token=${encodeURIComponent(this.token)}`);
+  }
+
   async uploadFmFile(file) {
+    const queueBar = document.getElementById('fm-transfer-queue');
+    const queueStatus = document.getElementById('fm-transfer-status');
+    if (queueBar && queueStatus) {
+      queueBar.classList.remove('hidden');
+      queueStatus.innerText = `Uploading ${file.name} (${this.formatBytes(file.size)})...`;
+    }
+
     const formData = new FormData();
     formData.append('target_dir', this.currentFmPath);
     formData.append('file', file);
 
-    this.showToast(`Uploading ${file.name}...`, 'info');
+    const startTime = performance.now();
     try {
       const res = await fetch(`${this.activeHostUrl}/api/files/upload`, {
         method: 'POST',
@@ -743,6 +1031,11 @@ class RemoteDeskApp {
         body: formData,
       });
       if (res.ok) {
+        const elapsedSec = Math.max(0.05, (performance.now() - startTime) / 1000);
+        const speed = this.formatBytes(Math.round(file.size / elapsedSec)) + '/s';
+        if (queueStatus) {
+          queueStatus.innerText = `✔ Completed: ${file.name} (${this.formatBytes(file.size)} @ ${speed})`;
+        }
         this.showToast(`Uploaded ${file.name}`, 'success');
         this.loadDirectory(this.currentFmPath);
       }
@@ -767,8 +1060,194 @@ class RemoteDeskApp {
     }
   }
 
+  // ── RUSTDESK TCP PORT TUNNELING ─────────────────────────────────────────────
+  async loadTunnels() {
+    await this.ensureAuthenticated();
+    try {
+      const res = await fetch(`${this.activeHostUrl}/api/tunnels`, {
+        headers: { 'Authorization': `Bearer ${this.token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const tbody = document.getElementById('tunnels-table-body');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+
+      if (!data.tunnels || data.tunnels.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">No active TCP tunnels. Create one on the left.</td></tr>`;
+        return;
+      }
+
+      data.tunnels.forEach((t) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${this.escapeHtml(t.name)}</strong></td>
+          <td class="font-mono" style="color:var(--accent);">127.0.0.1:${t.listen_port}</td>
+          <td class="font-mono">${this.escapeHtml(t.target_host)}:${t.target_port}</td>
+          <td class="font-mono text-muted">${this.formatBytes(t.bytes_forwarded)} (${t.active_connections} conn)</td>
+          <td style="text-align:right;">
+            <button class="icon-action-btn btn-stop-tunnel" style="color:var(--red);" title="Stop Tunnel">✕</button>
+          </td>
+        `;
+        tr.querySelector('.btn-stop-tunnel').addEventListener('click', async () => {
+          await fetch(`${this.activeHostUrl}/api/tunnels/${t.id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${this.token}` },
+          });
+          this.showToast(`Stopped tunnel :${t.listen_port}`, 'info');
+          this.loadTunnels();
+        });
+        tbody.appendChild(tr);
+      });
+    } catch (e) {
+      console.debug('Tunnel load error:', e);
+    }
+  }
+
+  async createTunnel() {
+    await this.ensureAuthenticated();
+    const name = document.getElementById('tunnel-name').value.trim();
+    const listenPort = parseInt(document.getElementById('tunnel-listen-port').value, 10);
+    const targetPort = parseInt(document.getElementById('tunnel-target-port').value, 10);
+    const targetHost = document.getElementById('tunnel-target-host').value.trim() || '127.0.0.1';
+
+    if (isNaN(listenPort) || isNaN(targetPort)) return;
+
+    try {
+      const res = await fetch(`${this.activeHostUrl}/api/tunnels`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: JSON.stringify({
+          name,
+          listen_port: listenPort,
+          target_host: targetHost,
+          target_port: targetPort,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        this.showToast(`TCP Tunnel listening on 127.0.0.1:${data.tunnel.listen_port}`, 'success');
+        document.getElementById('tunnel-form').reset();
+        document.getElementById('tunnel-target-host').value = '127.0.0.1';
+        this.loadTunnels();
+      } else {
+        this.showToast(data.detail || 'Failed to create TCP tunnel', 'error');
+      }
+    } catch (e) {
+      this.showToast('Error creating TCP tunnel', 'error');
+    }
+  }
+
+  // ── RUSTDESK SECURITY PERMISSIONS & AUDIT LOG ───────────────────────────────
+  async loadSecuritySettings() {
+    await this.ensureAuthenticated();
+    try {
+      const [permRes, logRes, sessRes] = await Promise.all([
+        fetch('/api/security/permissions'),
+        fetch('/api/security/audit-log?limit=20', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+        fetch('/api/security/sessions', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+      ]);
+
+      if (permRes.ok) {
+        const data = await permRes.json();
+        const p = data.permissions || {};
+        document.getElementById('perm-keyboard-mouse').checked = p.allow_keyboard_mouse !== false;
+        document.getElementById('perm-clipboard').checked = p.allow_clipboard !== false;
+        document.getElementById('perm-file-transfer').checked = p.allow_file_transfer !== false;
+        document.getElementById('perm-audio').checked = p.allow_audio !== false;
+        document.getElementById('perm-tcp-tunnel').checked = p.allow_tcp_tunnel !== false;
+        document.getElementById('perm-terminal').checked = p.allow_terminal !== false;
+        document.getElementById('perm-privacy').checked = p.privacy_mode_allowed !== false;
+
+        if (data.network) {
+          document.getElementById('setting-rendezvous-url').value = data.network.rendezvous_server || '';
+          document.getElementById('setting-ip-whitelist').value = (data.network.ip_whitelist || []).join(', ');
+        }
+      }
+
+      const auditContainer = document.getElementById('security-audit-list');
+      if (auditContainer) {
+        auditContainer.innerHTML = '';
+
+        if (sessRes.ok) {
+          const sessData = await sessRes.json();
+          (sessData.sessions || []).forEach((s) => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.justifyContent = 'space-between';
+            row.style.color = 'var(--green)';
+            row.innerHTML = `
+              <span>🟢 Active [${s.client_ip}] (${s.auth_method})</span>
+              <button style="color:var(--red);font-size:11px;font-weight:700;" data-kick="${s.session_id}">[Kick]</button>
+            `;
+            row.querySelector('[data-kick]').onclick = async () => {
+              await fetch(`/api/security/sessions/${s.session_id}/kick`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${this.token}` },
+              });
+              this.showToast(`Kicked session ${s.session_id}`, 'warning');
+              this.loadSecuritySettings();
+            };
+            auditContainer.appendChild(row);
+          });
+        }
+
+        if (logRes.ok) {
+          const logData = await logRes.json();
+          (logData.events || []).forEach((ev) => {
+            const div = document.createElement('div');
+            div.innerText = `[${ev.timestamp}] ${ev.event} (${ev.client_ip}) ${ev.details || ''}`;
+            auditContainer.appendChild(div);
+          });
+        }
+      }
+    } catch (e) {
+      console.debug('Security settings load error:', e);
+    }
+  }
+
+  async saveSecurityPermissions() {
+    await this.ensureAuthenticated();
+    const perms = {
+      allow_keyboard_mouse: document.getElementById('perm-keyboard-mouse').checked,
+      allow_clipboard: document.getElementById('perm-clipboard').checked,
+      allow_file_transfer: document.getElementById('perm-file-transfer').checked,
+      allow_audio: document.getElementById('perm-audio').checked,
+      allow_tcp_tunnel: document.getElementById('perm-tcp-tunnel').checked,
+      allow_terminal: document.getElementById('perm-terminal').checked,
+      privacy_mode_allowed: document.getElementById('perm-privacy').checked,
+    };
+
+    const rvUrl = document.getElementById('setting-rendezvous-url').value.trim();
+    const whitelistRaw = document.getElementById('setting-ip-whitelist').value.trim();
+    const whitelist = whitelistRaw ? whitelistRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
+    try {
+      await Promise.all([
+        fetch('/api/security/permissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+          body: JSON.stringify(perms),
+        }),
+        fetch('/api/security/network', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+          body: JSON.stringify({ rendezvous_server: rvUrl, ip_whitelist: whitelist }),
+        }),
+      ]);
+      this.showToast('Saved RustDesk security & network policy', 'success');
+      this.loadSecuritySettings();
+    } catch (e) {
+      this.showToast('Failed to save security policy', 'error');
+    }
+  }
+
   // ── REMOTE TERMINAL CONSOLE ─────────────────────────────────────────────────
-  initTerminal() {
+  async initTerminal() {
+    await this.ensureAuthenticated();
     if (this.termWs) this.termWs.close();
 
     const isSecure = this.activeHostUrl.startsWith('https:');
@@ -804,12 +1283,12 @@ class RemoteDeskApp {
   }
 
   // ── TASK MANAGER & TELEMETRY ────────────────────────────────────────────────
-  initDiagnostics() {
+  async initDiagnostics() {
+    await this.ensureAuthenticated();
     this.pollDiagnostics();
     if (this.diagInterval) clearInterval(this.diagInterval);
     this.diagInterval = setInterval(() => this.pollDiagnostics(), 2500);
 
-    // Power Buttons
     document.querySelectorAll('.btn-power').forEach((btn) => {
       btn.onclick = async (e) => {
         const action = e.target.getAttribute('data-power');
@@ -824,7 +1303,6 @@ class RemoteDeskApp {
       };
     });
 
-    // Search filter
     document.getElementById('process-search').oninput = (e) => {
       const q = e.target.value.toLowerCase();
       document.querySelectorAll('#process-table-body tr').forEach((tr) => {
@@ -957,11 +1435,16 @@ class RemoteDeskApp {
 
   // ── UTILITIES ───────────────────────────────────────────────────────────────
   applyQualityPreset(preset) {
+    if (preset === 'auto') {
+      this.sendWs({ type: 'config', adaptive: true });
+      this.showToast('Enabled RustDesk Auto Adaptive Quality', 'success');
+      return;
+    }
     let fps = 30, quality = 70;
     if (preset === 'high') { fps = 60; quality = 85; }
     else if (preset === 'balanced') { fps = 30; quality = 70; }
     else if (preset === 'low') { fps = 20; quality = 45; }
-    this.sendWs({ type: 'config', fps, quality });
+    this.sendWs({ type: 'config', adaptive: false, fps, quality });
     this.showToast(`Applied ${preset} stream preset`, 'success');
   }
 

@@ -1,10 +1,12 @@
-"""Remote File System Manager supporting drive enumeration, file browsing, upload, and download."""
+"""Remote File System Manager supporting drive enumeration, file browsing, upload, download, and folder ZIP archiving."""
 
+import io
 import os
 import platform
 import shutil
 import string
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,7 +14,7 @@ import psutil
 
 
 class FileManager:
-    """Provides cross-platform remote file system operations."""
+    """Provides cross-platform remote file system operations including RustDesk-style folder ZIP archives."""
 
     def __init__(self):
         self.is_windows = platform.system() == "Windows"
@@ -122,6 +124,31 @@ class FileManager:
             f.write(content)
 
         return str(target_file.resolve())
+
+    def create_folder_zip_bytes(self, folder_path: str, max_bytes: int = 250 * 1024 * 1024) -> Tuple[bytes, str]:
+        """Compress a folder into an in-memory .zip archive for one-click folder download."""
+        target = Path(folder_path).resolve()
+        if not target.exists() or not target.is_dir():
+            raise FileNotFoundError(f"Directory not found: {folder_path}")
+
+        buf = io.BytesIO()
+        total_written = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, filenames in os.walk(target):
+                for fname in filenames:
+                    fpath = Path(root) / fname
+                    try:
+                        fsize = fpath.stat().st_size
+                        if total_written + fsize > max_bytes:
+                            break
+                        arcname = str(fpath.relative_to(target))
+                        zf.write(fpath, arcname=arcname)
+                        total_written += fsize
+                    except (PermissionError, OSError):
+                        continue
+
+        zip_filename = f"{target.name or 'folder'}.zip"
+        return buf.getvalue(), zip_filename
 
     def delete_item(self, item_path: str) -> bool:
         """Delete a file or directory."""

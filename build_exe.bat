@@ -1,50 +1,33 @@
 @echo off
-setlocal enabledelayedexpansion
-
-echo =================================================================
-echo       RemoteDesk Pro — Windows Executable Builder (.exe)
-echo =================================================================
+title RemoteDesk Pro v2.0 — Executable & Windows Setup Installer Builder
+echo =====================================================================
+echo   REMOTEDESK PRO v2.0 — WINDOWS APP ^& SETUP INSTALLER BUILDER
+echo =====================================================================
 echo.
 
-REM 1. Ensure Python Virtual Environment & PyInstaller
-if not exist .venv\Scripts\python.exe (
-    echo [*] Setting up environment...
-    call setup.bat --no-pause
+echo [1/4] Stopping any running RemoteDeskPro instances...
+powershell -NoProfile -Command "Stop-Process -Name RemoteDeskPro -Force -ErrorAction SilentlyContinue; Stop-Process -Name RemoteDeskPro-Setup -Force -ErrorAction SilentlyContinue"
+
+echo [2/4] Generating high-resolution Windows application icons...
+.\.venv\Scripts\python.exe assets\generate_icon.py
+
+echo [3/4] Compiling standalone desktop application (dist\RemoteDeskPro.exe)...
+.\.venv\Scripts\pyinstaller.exe RemoteDeskPro.spec --clean --noconfirm
+if errorlevel 1 (
+    echo [ERROR] Failed to build RemoteDeskPro.exe
+    exit /b 1
 )
 
-echo [*] Checking PyInstaller...
-.venv\Scripts\python.exe -m pip install pyinstaller >nul 2>&1
-
-REM 2. Generate application icon
-echo [*] Generating icon assets...
-.venv\Scripts\python.exe assets\generate_icon.py
-
-REM 3. Run PyInstaller Build
-echo.
-echo [*] Compiling RemoteDeskPro.exe with PyInstaller...
-echo     (This may take ~30-60 seconds depending on your CPU)
-echo.
-
-.venv\Scripts\pyinstaller.exe RemoteDeskPro.spec --clean --noconfirm
-
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo [!] Build failed! Check the error log above.
-    pause
+echo [4/4] Compiling One-Click Windows Setup Installer (dist\RemoteDeskPro-Setup.exe)...
+.\.venv\Scripts\pyinstaller.exe RemoteDeskProSetup.spec --clean --noconfirm
+if errorlevel 1 (
+    echo [ERROR] Failed to build RemoteDeskPro-Setup.exe
     exit /b 1
 )
 
 echo.
-echo =================================================================
-echo  [+] BUILD SUCCEEDED!
-echo  Standalone Executable Location:
-echo      dist\RemoteDeskPro.exe
-echo.
-echo  You can now copy 'dist\RemoteDeskPro.exe' to any Windows PC
-echo  and run it directly with zero dependencies!
-echo =================================================================
-echo.
-
-if "%1" neq "--no-pause" (
-    pause
-)
+echo =====================================================================
+echo   [SUCCESS] Build Complete!
+echo   - Portable / Desktop App : dist\RemoteDeskPro.exe
+echo   - Windows Setup Installer: dist\RemoteDeskPro-Setup.exe
+echo =====================================================================

@@ -1,42 +1,45 @@
-# 🖥️ RemoteDesk Pro — Full-Featured Self-Hosted Remote Desktop Suite
+# 🖥️ RemoteDesk Pro v2.0 — RustDesk-Powered Self-Hosted Remote Desktop Suite
 
-A production-ready, lightweight, low-latency, self-hosted remote desktop application. Designed with the **frosted squircle glassmorphism** aesthetics of `personal-nas` and inspired by the dual-card connection architecture of **TeamViewer / AnyDesk**.
+A production-ready, lightweight, low-latency, self-hosted remote desktop application combining the **frosted squircle glassmorphism** UI of `personal-nas` with the core architecture and feature set of **[RustDesk](https://github.com/rustdesk/rustdesk)** and **TeamViewer**.
 
 ---
 
-## 📦 Standalone Windows Executable (.exe)
+## 💿 Windows Installer & Standalone Executable (Run on Any PC)
 
-You can run RemoteDesk Pro on **any Windows PC** as a standalone portable application with **zero pre-installed dependencies** (no Python, no git required):
+RemoteDesk Pro v2.0 is packaged in **two ready-to-use Windows formats** in the `dist\` directory—requiring **zero Python or external dependencies** on the target computer:
 
-### Option 1: Run Pre-Built Executable
-Simply double-click `dist\RemoteDeskPro.exe`.
-- Automatically initializes the host daemon.
-- Automatically pops open your default web browser to the dashboard.
-- Displays the **Pairing PIN** in the console.
+### Option 1: One-Click Windows Setup Installer (`dist\RemoteDeskPro-Setup.exe`)
+Simply copy and run **`dist\RemoteDeskPro-Setup.exe`** on **any Windows PC**:
+- Launches a native **Windows Setup Wizard** (or run silently via `RemoteDeskPro-Setup.exe --silent`).
+- Installs the application to `%LOCALAPPDATA%\Programs\RemoteDeskPro`.
+- Creates **Desktop** (`RemoteDesk Pro.lnk`) and **Start Menu** shortcuts.
+- Registers in **Windows Installed Apps (Add or Remove Programs)** with a dedicated `Uninstall.exe`.
+- Configures **Unattended Auto-Start with Windows** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- Launches the **Windows System Tray Agent** and **Native Desktop App Window**.
 
-### Option 2: One-Click Build Script
-To re-compile the executable from source at any time:
+### Option 2: Portable Single-File Executable (`dist\RemoteDeskPro.exe`)
+Double-click **`dist\RemoteDeskPro.exe`** to run immediately without installation.
+
+### Option 3: Rebuild Executables & Installer from Source
 ```bat
 .\build_exe.bat
 ```
-*(Automatically generates icon assets, resolves dependencies, and compiles a single-file `dist\RemoteDeskPro.exe`)*
 
 ---
 
-## 🌟 Comprehensive Feature Suite
+## 🌟 Merged RustDesk + Enterprise Feature Suite
 
 | Feature Category | Description |
 |---|---|
-| **⚡ Ultra-Low Latency Streaming** | High-speed WebP / TurboJPEG frame encoding with backpressure flow control, frame-diffing, and 10–60 FPS adaptive rate. |
-| **🎮 Precision Remote Input** | Sub-pixel mouse mapping, letterbox aspect-fit, **Pointer Lock mode (L)**, touch gestures, and stuck-key safety release. |
-| **📁 Remote File Manager** | Two-pane directory explorer, drive switcher (`C:\`, `D:\`, `/`), upload/download, rename, and **Canvas Drag-and-Drop** directly to Host Desktop. |
-| **💻 Interactive Web Terminal** | Real-time streaming CLI console (PowerShell / CMD on Windows, Bash / Zsh on Linux/Mac) with ANSI color output. |
-| **📊 Task Manager & Diagnostics** | Real-time CPU, RAM, Disk, and Network telemetry graphs, active process table with one-click **Kill Process**, and power controls (Lock, Sleep, Reboot). |
-| **💬 In-Session Live Text Chat** | Instant bidirectional messaging drawer between host user and remote partner. |
-| **📸 In-Browser Recording & Snapshots** | Capture high-res PNG screenshots or record canvas video stream directly in browser to `.webm` downloads. |
-| **⌨ Virtual On-Screen Keyboard** | Touch-friendly key bar for tablets, phones, and quick special keys. |
-| **📖 Address Book & Favorites** | Save frequently accessed machines with friendly aliases and one-click connection. |
-| **🔒 Enterprise Security** | 6-digit session PIN or permanent password, HMAC-SHA256 tokens, IP rate-limiting lockout, View-Only mode, and auto-generated TLS certificates. |
+| **📡 Rendezvous (`hbbs`), Relay (`hbbr`) & LAN Discovery** | Automatic **UDP Port 21116** LAN peer discovery + built-in Rendezvous/Relay broker so you can connect directly using a **9-digit Partner ID (`360 523 800`)**. |
+| **🔊 Remote System Audio Streaming** | Real-time PCM/WAV audio streaming over WebSockets with Web Audio API playback and in-session Mute/Unmute toggle. |
+| **🕵️ RustDesk Privacy Mode** | Blanks the remote physical screen (`WDA_EXCLUDEFROMCAPTURE` dark curtain) and blocks local physical mouse/keyboard input while the remote administrator works. |
+| **🔌 TCP Port Tunneling / Forwarding** | Forward local TCP ports (`127.0.0.1:listen_port`) to any remote service (`target_host:target_port`) such as SSH, RDP, databases, or internal web servers. |
+| **🛡️ Granular Session Permissions & Security** | Independently toggle remote permissions (*Keyboard/Mouse*, *Clipboard*, *File Transfer*, *Audio*, *TCP Tunnel*, *Terminal*, *Privacy Mode*), configure **Permanent Unattended Passwords**, IP Whitelists, and **Kick** active sessions. |
+| **⚡ Adaptive Video Engine & Static Frame Skipping** | High-speed WebP / JPEG encoding, RTT-based **Auto Adaptive Quality**, **0 KB/s idle static frame skipping**, and live remote cursor tracking. |
+| **📁 File Transfer + Folder `.ZIP` Download** | Full directory browser, drive switcher (`C:\`, `D:\`, `/`), **One-Click Folder `.zip` Download**, live transfer speed queue, and **Canvas Drag-and-Drop** to Host Desktop. |
+| **💻 Interactive Web Terminal & Task Manager** | Real-time streaming PowerShell / Bash console, live CPU/RAM/Network gauges, process killer, and remote power controls (Lock, Sleep, Reboot). |
+| **🖥️ Native Windows App + System Tray Agent** | Persistent Windows System Tray icon (`pystray`) with quick ID/PIN copy, Privacy Mode toggle, Auto-Start toggle, and frameless native desktop window mode. |
 
 ---
 
@@ -58,28 +61,24 @@ chmod +x run.sh setup.sh
 ## 🛠️ CLI Options & Customization
 
 ```bash
-# Set a custom fixed PIN (e.g. 123456)
-.\dist\RemoteDeskPro.exe --pin 123456
+# Start normally (System Tray + Native Desktop App Window)
+.\dist\RemoteDeskPro.exe
 
-# Set a custom password instead of a PIN
-.\dist\RemoteDeskPro.exe --password MySuperSecretPassword!
+# Start silently minimized in the Windows System Tray (used on Windows boot)
+.\dist\RemoteDeskPro.exe --tray
 
-# Change port to 9000
-.\dist\RemoteDeskPro.exe --port 9000
+# Run Silent Unattended Installation on any Windows PC
+.\dist\RemoteDeskPro-Setup.exe --silent
 
-# Do not automatically launch browser
-.\dist\RemoteDeskPro.exe --no-browser
-
-# Low bandwidth mode for slower networks
-.\dist\RemoteDeskPro.exe --fps 20 --quality 50 --scale 0.75
+# Uninstall silently
+.\dist\RemoteDeskPro-Setup.exe --uninstall
 ```
 
 ---
 
 ## 🧪 Running Automated Tests
 
-Run the complete test suite:
+Run the complete 38-test suite:
 ```bash
-.venv\Scripts\pytest tests/ -v
+.\.venv\Scripts\pytest.exe tests/ -v
 ```
-*(All 32 tests covering auth, coordinate scaling, file manager, system diagnostics, REST endpoints, and WebSocket streaming will run)*

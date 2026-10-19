@@ -1,24 +1,33 @@
-"""FastAPI application providing REST endpoints, static assets, WebSocket streaming, and remote terminal."""
+"""FastAPI application providing REST endpoints, static assets, WebSocket streaming,
+Rendezvous (hbbs) & Relay (hbbr) services, LAN discovery, TCP tunneling, Privacy Mode, and remote terminal."""
 
 import os
 import platform
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from core.audio_service import AudioService
 from core.auth import AuthManager
 from core.clipboard import ClipboardManager
+from core.config_store import ConfigStore
+from core.discovery import LanDiscoveryService
 from core.file_manager import FileManager
 from core.input_handler import InputHandler
+from core.privacy_mode import PrivacyModeManager
+from core.rendezvous import RendezvousBroker, RendezvousClientMediator
 from core.screen import ScreenCapture
 from core.system_diagnostics import SystemDiagnostics
+from core.tcp_tunnel import TcpTunnelManager
 from core.terminal_session import TerminalSession
 from core.tls import get_local_ips
+from core.windows_integration import get_windows_integration_status, set_autostart_enabled
 from server.streamer import ClientSession
 
 
@@ -62,6 +71,57 @@ class AddressBookSaveRequest(BaseModel):
     entries: List[Dict[str, Any]]
 
 
+class PermissionsUpdateRequest(BaseModel):
+    allow_keyboard_mouse: Optional[bool] = None
+    allow_clipboard: Optional[bool] = None
+    allow_file_transfer: Optional[bool] = None
+    allow_audio: Optional[bool] = None
+    allow_tcp_tunnel: Optional[bool] = None
+    allow_power_control: Optional[bool] = None
+    allow_terminal: Optional[bool] = None
+    privacy_mode_allowed: Optional[bool] = None
+    unattended_enabled: Optional[bool] = None
+
+
+class PermanentPasswordRequest(BaseModel):
+    password: Optional[str] = None
+
+
+class NetworkConfigRequest(BaseModel):
+    rendezvous_server: Optional[str] = None
+    relay_server: Optional[str] = None
+    relay_key: Optional[str] = None
+    lan_discovery: Optional[bool] = None
+    direct_ip_access: Optional[bool] = None
+    ip_whitelist: Optional[List[str]] = None
+
+
+class RendezvousRegisterRequest(BaseModel):
+    machine_id: str
+    hostname: Optional[str] = "RemoteDesk-Host"
+    os: Optional[str] = "Windows"
+    ips: List[str] = []
+    port: int = 8000
+    ssl: bool = False
+    relay_key: Optional[str] = ""
+
+
+class PrivacyToggleRequest(BaseModel):
+    enabled: bool
+
+
+class TunnelCreateRequest(BaseModel):
+    name: Optional[str] = ""
+    listen_port: int
+    target_host: str = "127.0.0.1"
+    target_port: int
+    listen_host: str = "127.0.0.1"
+
+
+class AutoStartRequest(BaseModel):
+    enabled: bool
+
+
 def create_app(
     auth_manager: AuthManager,
     screen_capture: Optional[ScreenCapture] = None,
@@ -69,20 +129,42 @@ def create_app(
     clipboard_manager: Optional[ClipboardManager] = None,
     file_manager: Optional[FileManager] = None,
     system_diagnostics: Optional[SystemDiagnostics] = None,
+    config_store: Optional[ConfigStore] = None,
+    discovery_service: Optional[LanDiscoveryService] = None,
+    rendezvous_broker: Optional[RendezvousBroker] = None,
+    privacy_manager: Optional[PrivacyModeManager] = None,
+    audio_service: Optional[AudioService] = None,
+    tunnel_manager: Optional[TcpTunnelManager] = None,
     default_fps: int = 30,
 ) -> FastAPI:
-    """Create and configure FastAPI application instance."""
-    app = FastAPI(title="RemoteDesk Pro Host", version="1.0.0")
+    """Create and configure FastAPI application instance with full RustDesk feature suite."""
+    app = FastAPI(title="RemoteDesk Pro Host", version="2.0.0")
 
     # Shared instances
+    cfg = config_store or getattr(auth_manager, "config_store", None) or ConfigStore()
+    if auth_manager.config_store is None:
+        auth_manager.config_store = cfg
+
     screen = screen_capture or ScreenCapture()
     input_h = input_handler or InputHandler()
     clip = clipboard_manager or ClipboardManager()
     files = file_manager or FileManager()
     diagnostics = system_diagnostics or SystemDiagnostics()
+    privacy = privacy_manager or PrivacyModeManager()
+    audio = audio_service or AudioService()
+    tunnels = tunnel_manager or TcpTunnelManager()
+    rv_broker = rendezvous_broker or RendezvousBroker()
+    discovery = discovery_service or LanDiscoveryService(machine_id=auth_manager.get_machine_id())
 
-    # Address book memory cache
-    _address_book_cache: List[Dict[str, Any]] = []
+    # Register self in local rendezvous broker immediately
+    rv_broker.register_host(
+        machine_id=auth_manager.get_machine_id(),
+        hostname=platform.node(),
+        os_name=platform.system(),
+        ips=get_local_ips(),
+        port=discovery.http_port,
+        is_ssl=discovery.is_ssl,
+    )
 
     # CORS configuration
     app.add_middleware(
@@ -102,19 +184,29 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session token")
         return True
 
+    def check_permission(perm_key: str) -> None:
+        """Raise 403 if the requested capability is disabled in host security permissions."""
+        perms = cfg.get_permissions()
+        if not perms.get(perm_key, True):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Host security policy has disabled '{perm_key}'.",
+            )
+
     # ════════════════════════════════════════════════════════════════════════
     # AUTHENTICATION & HOST INFO
     # ════════════════════════════════════════════════════════════════════════
 
     @app.get("/api/host-info")
     async def get_host_info():
-        """Public host information (Machine ID, LAN IPs, OS, monitors count) for connection cards."""
+        """Public host information (Machine ID, LAN IPs, OS, monitors, permissions, privacy status)."""
         monitors = screen.get_monitors()
         active_rect = screen.get_current_monitor_rect()
         return {
             "machine_id": auth_manager.get_machine_id(),
             "pin": auth_manager.pin if not auth_manager.is_custom_password else "••••••",
             "has_password": auth_manager.is_custom_password,
+            "has_permanent_password": cfg.has_permanent_password(),
             "hostname": platform.node(),
             "os": platform.system(),
             "os_release": platform.release(),
@@ -122,12 +214,16 @@ def create_app(
             "active_monitor": screen.monitor_index,
             "monitor_rect": active_rect,
             "local_ips": get_local_ips(),
+            "permissions": cfg.get_permissions(),
+            "privacy_mode": privacy.get_status(),
+            "windows_integration": get_windows_integration_status(),
+            "version": "2.0.0",
             "status": "ready",
         }
 
     @app.post("/api/auth/login")
     async def login(req: LoginRequest, request: Request):
-        """Authenticate with PIN or password and receive session token."""
+        """Authenticate with One-Time PIN or Unattended Permanent Password and receive session token."""
         client_ip = request.client.host if request.client else "127.0.0.1"
         code = req.password or req.pin or ""
 
@@ -141,6 +237,7 @@ def create_app(
             "expires_in": auth_manager.token_ttl,
             "message": message,
             "machine_id": auth_manager.get_machine_id(),
+            "permissions": cfg.get_permissions(),
         }
 
     @app.post("/api/auth/regenerate-pin")
@@ -171,7 +268,197 @@ def create_app(
             "default_fps": default_fps,
             "format": screen.format,
             "quality": screen.quality,
+            "permissions": cfg.get_permissions(),
+            "privacy_mode": privacy.get_status(),
         }
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RUSTDESK LAN PEER DISCOVERY & RENDEZVOUS (HBBS / HBBR)
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/discovery/peers")
+    async def get_discovered_peers():
+        """List all RemoteDesk Pro peers discovered on the local network."""
+        peers = discovery.get_discovered_peers(include_self=True)
+        return {"peers": peers, "count": len(peers)}
+
+    @app.get("/api/discovery/resolve")
+    async def resolve_partner_id(partner_id: str = Query(...)):
+        """
+        Resolve a 9-digit Partner ID (e.g. '360 523 800') via:
+        1. Local LAN UDP Discovery Table
+        2. Built-in Rendezvous (hbbs) Registry
+        """
+        # 1. Check LAN Discovery
+        lan_url = discovery.resolve_partner_id(partner_id)
+        if lan_url:
+            return {"found": True, "source": "lan_discovery", "url": lan_url, "partner_id": partner_id}
+
+        # 2. Check Rendezvous Broker
+        rv_entry = rv_broker.lookup_host(partner_id)
+        if rv_entry and rv_entry.get("direct_url"):
+            return {
+                "found": True,
+                "source": "rendezvous_server",
+                "url": rv_entry["direct_url"],
+                "partner_id": partner_id,
+                "host": rv_entry,
+            }
+
+        return {"found": False, "partner_id": partner_id, "url": None}
+
+    @app.post("/api/rendezvous/register")
+    async def rendezvous_register(req: RendezvousRegisterRequest, request: Request):
+        """Rendezvous (hbbs) endpoint: Register or heartbeat a host Machine ID."""
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        record = rv_broker.register_host(
+            machine_id=req.machine_id,
+            hostname=req.hostname or "RemoteDesk-Host",
+            os_name=req.os or "Windows",
+            ips=req.ips,
+            port=req.port,
+            is_ssl=req.ssl,
+            relay_key=req.relay_key or "",
+            public_ip=client_ip,
+        )
+        return {"success": True, "registration": record}
+
+    @app.get("/api/rendezvous/lookup/{machine_id}")
+    async def rendezvous_lookup(machine_id: str):
+        """Rendezvous (hbbs) endpoint: Lookup connection details for a 9-digit Partner ID."""
+        record = rv_broker.lookup_host(machine_id)
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner ID not registered")
+        return record
+
+    @app.get("/api/rendezvous/peers")
+    async def rendezvous_list_peers():
+        """List all hosts registered with this Rendezvous server."""
+        peers = rv_broker.list_registered_hosts()
+        return {"peers": peers, "count": len(peers)}
+
+    @app.websocket("/ws/relay/{channel_id}")
+    async def websocket_relay(websocket: WebSocket, channel_id: str, role: str = Query("client")):
+        """Relay (hbbr) endpoint: Bridge host and client WebSockets when behind symmetric NAT."""
+        await websocket.accept()
+        await rv_broker.bridge_relay_websocket(channel_id=channel_id, role=role, ws=websocket)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RUSTDESK GRANULAR SECURITY, PERMANENT PASSWORD, AUDIT LOG & PRIVACY MODE
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/security/permissions")
+    async def get_permissions():
+        """Return granular session permissions and unattended status."""
+        return {
+            "permissions": cfg.get_permissions(),
+            "has_permanent_password": cfg.has_permanent_password(),
+            "network": cfg.get_network_config(),
+        }
+
+    @app.post("/api/security/permissions")
+    async def update_permissions(req: PermissionsUpdateRequest, authorized: bool = Depends(verify_auth_header)):
+        """Update granular session permissions (Keyboard/Mouse, Clipboard, File Transfer, Audio, Tunneling, Power)."""
+        updates = {k: v for k, v in req.model_dump().items() if v is not None}
+        updated = cfg.update_permissions(updates)
+        cfg.add_audit_event("PERMISSIONS_UPDATED", details=str(updates))
+        return {"success": True, "permissions": updated}
+
+    @app.post("/api/security/permanent-password")
+    async def set_permanent_password(req: PermanentPasswordRequest, authorized: bool = Depends(verify_auth_header)):
+        """Set or clear the persistent Unattended Access Permanent Password."""
+        has_pwd = cfg.set_permanent_password(req.password)
+        cfg.add_audit_event("PERMANENT_PASSWORD_CHANGED", details="Set" if has_pwd else "Cleared")
+        return {"success": True, "has_permanent_password": has_pwd}
+
+    @app.post("/api/security/network")
+    async def update_network_settings(req: NetworkConfigRequest, authorized: bool = Depends(verify_auth_header)):
+        """Configure Rendezvous/Relay server URL, key, LAN discovery, and IP whitelist."""
+        updates = {k: v for k, v in req.model_dump().items() if v is not None}
+        net = cfg.update_network_config(updates)
+        if "lan_discovery" in updates:
+            discovery.enabled = bool(updates["lan_discovery"])
+        return {"success": True, "network": net}
+
+    @app.get("/api/security/sessions")
+    async def list_active_sessions(authorized: bool = Depends(verify_auth_header)):
+        """List currently connected remote sessions."""
+        return {"sessions": auth_manager.list_active_sessions()}
+
+    @app.post("/api/security/sessions/{session_id}/kick")
+    async def kick_session(session_id: str, authorized: bool = Depends(verify_auth_header)):
+        """Disconnect / revoke an active remote session."""
+        revoked = auth_manager.revoke_session(session_id)
+        if not revoked:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        return {"success": True, "session_id": session_id}
+
+    @app.get("/api/security/audit-log")
+    async def get_audit_log(limit: int = Query(50), authorized: bool = Depends(verify_auth_header)):
+        """Fetch recent security and connection audit events."""
+        return {"events": cfg.get_audit_log(limit=limit)}
+
+    @app.get("/api/privacy")
+    async def get_privacy_status(authorized: bool = Depends(verify_auth_header)):
+        """Get current Privacy Mode status."""
+        return privacy.get_status()
+
+    @app.post("/api/privacy")
+    async def toggle_privacy_mode(req: PrivacyToggleRequest, authorized: bool = Depends(verify_auth_header)):
+        """Enable or disable RustDesk-style Privacy Mode (screen curtain + physical input block)."""
+        check_permission("privacy_mode_allowed")
+        status_dict = privacy.set_privacy_mode(req.enabled)
+        cfg.add_audit_event("PRIVACY_MODE", details=f"Privacy mode {'enabled' if req.enabled else 'disabled'}")
+        return {"success": True, "privacy": status_dict}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RUSTDESK TCP TUNNELING / PORT FORWARDING
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/tunnels")
+    async def list_tunnels(authorized: bool = Depends(verify_auth_header)):
+        """List active TCP port-forwarding tunnels."""
+        return {"tunnels": tunnels.list_tunnels()}
+
+    @app.post("/api/tunnels")
+    async def create_tunnel(req: TunnelCreateRequest, authorized: bool = Depends(verify_auth_header)):
+        """Create a new local-to-remote TCP port-forwarding tunnel."""
+        check_permission("allow_tcp_tunnel")
+        try:
+            tunnel = tunnels.create_tunnel(
+                listen_port=req.listen_port,
+                target_host=req.target_host,
+                target_port=req.target_port,
+                listen_host=req.listen_host,
+                name=req.name or "",
+            )
+            cfg.add_audit_event("TCP_TUNNEL_CREATED", details=f"{tunnel['listen_port']} -> {tunnel['target_host']}:{tunnel['target_port']}")
+            return {"success": True, "tunnel": tunnel}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to bind tunnel port: {e}")
+
+    @app.delete("/api/tunnels/{tunnel_id}")
+    async def delete_tunnel(tunnel_id: str, authorized: bool = Depends(verify_auth_header)):
+        """Stop and remove a TCP port-forwarding tunnel."""
+        stopped = tunnels.stop_tunnel(tunnel_id)
+        if not stopped:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tunnel not found")
+        return {"success": True, "id": tunnel_id}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # WINDOWS OS INTEGRATION (AUTO-START & STATUS)
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.get("/api/windows/integration")
+    async def windows_status():
+        """Get Windows desktop integration status (Auto-Start, Executable path)."""
+        return get_windows_integration_status()
+
+    @app.post("/api/windows/autostart")
+    async def windows_autostart(req: AutoStartRequest, authorized: bool = Depends(verify_auth_header)):
+        """Enable or disable starting RemoteDesk Pro automatically with Windows."""
+        ok = set_autostart_enabled(req.enabled)
+        return {"success": ok, "autostart_enabled": req.enabled}
 
     # ════════════════════════════════════════════════════════════════════════
     # MONITORS, INPUT & CLIPBOARD
@@ -196,32 +483,37 @@ def create_app(
     @app.get("/api/clipboard")
     async def get_clipboard(authorized: bool = Depends(verify_auth_header)):
         """Fetch host clipboard contents."""
+        check_permission("allow_clipboard")
         return {"text": clip.get_text()}
 
     @app.post("/api/clipboard")
     async def set_clipboard(req: ClipboardRequest, authorized: bool = Depends(verify_auth_header)):
         """Set host clipboard contents."""
+        check_permission("allow_clipboard")
         success = clip.set_text(req.text)
         return {"success": success}
 
     @app.post("/api/action/special")
     async def special_action(req: SpecialActionRequest, authorized: bool = Depends(verify_auth_header)):
         """Trigger keyboard/system macros."""
+        check_permission("allow_keyboard_mouse")
         success = input_h.trigger_special_action(req.action)
         return {"success": success, "action": req.action}
 
     # ════════════════════════════════════════════════════════════════════════
-    # REMOTE FILE MANAGER
+    # REMOTE FILE MANAGER (WITH FOLDER ZIP ARCHIVE DOWNLOAD)
     # ════════════════════════════════════════════════════════════════════════
 
     @app.get("/api/files/drives")
     async def get_drives(authorized: bool = Depends(verify_auth_header)):
         """Get storage partitions and user shortcut folders."""
+        check_permission("allow_file_transfer")
         return files.get_drives_and_shortcuts()
 
     @app.get("/api/files/list")
     async def list_files(path: Optional[str] = Query(None), authorized: bool = Depends(verify_auth_header)):
         """List files in directory."""
+        check_permission("allow_file_transfer")
         try:
             return files.list_dir(path)
         except Exception as e:
@@ -239,9 +531,11 @@ def create_app(
         authorized: bool = Depends(verify_auth_header),
     ):
         """Upload file to host folder."""
+        check_permission("allow_file_transfer")
         try:
             content = await file.read()
             saved_path = files.save_uploaded_file(target_dir, file.filename, content)
+            cfg.add_audit_event("FILE_UPLOAD", details=f"Uploaded {file.filename} ({len(content)} bytes)")
             return {"success": True, "saved_path": saved_path, "filename": file.filename, "size": len(content)}
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -252,6 +546,7 @@ def create_app(
         auth_token = token or (authorization.replace("Bearer ", "").strip() if authorization else None)
         if not auth_manager.validate_session_token(auth_token):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        check_permission("allow_file_transfer")
 
         target = Path(path).resolve()
         if not target.exists() or target.is_dir():
@@ -263,9 +558,30 @@ def create_app(
             filename=target.name,
         )
 
+    @app.get("/api/files/download-zip")
+    async def download_folder_zip(path: str = Query(...), token: Optional[str] = Query(None), authorization: Optional[str] = Header(None)):
+        """Download an entire folder compressed on-the-fly as a .zip archive."""
+        auth_token = token or (authorization.replace("Bearer ", "").strip() if authorization else None)
+        if not auth_manager.validate_session_token(auth_token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        check_permission("allow_file_transfer")
+
+        try:
+            zip_bytes, zip_name = files.create_folder_zip_bytes(path)
+            return Response(
+                content=zip_bytes,
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+            )
+        except FileNotFoundError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     @app.post("/api/files/delete")
     async def delete_file(req: FileDeleteRequest, authorized: bool = Depends(verify_auth_header)):
         """Delete file or directory."""
+        check_permission("allow_file_transfer")
         success = files.delete_item(req.path)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
@@ -274,6 +590,7 @@ def create_app(
     @app.post("/api/files/mkdir")
     async def mkdir(req: FileMkdirRequest, authorized: bool = Depends(verify_auth_header)):
         """Create new directory."""
+        check_permission("allow_file_transfer")
         try:
             created = files.create_dir(req.parent, req.name)
             return {"success": True, "path": created}
@@ -283,6 +600,7 @@ def create_app(
     @app.post("/api/files/rename")
     async def rename_file(req: FileRenameRequest, authorized: bool = Depends(verify_auth_header)):
         """Rename file or directory."""
+        check_permission("allow_file_transfer")
         try:
             renamed = files.rename_item(req.path, req.new_name)
             return {"success": True, "path": renamed}
@@ -310,6 +628,7 @@ def create_app(
     @app.post("/api/system/processes/{pid}/kill")
     async def kill_proc(pid: int, authorized: bool = Depends(verify_auth_header)):
         """Terminate a running process."""
+        check_permission("allow_power_control")
         success = diagnostics.kill_process(pid)
         if not success:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to kill process {pid}")
@@ -318,24 +637,24 @@ def create_app(
     @app.post("/api/system/power")
     async def power_control(req: PowerActionRequest, authorized: bool = Depends(verify_auth_header)):
         """Execute power action (lock, sleep, restart, shutdown)."""
+        check_permission("allow_power_control")
         success = diagnostics.execute_power_action(req.action)
         return {"success": success, "action": req.action}
 
     # ════════════════════════════════════════════════════════════════════════
-    # ADDRESS BOOK
+    # ADDRESS BOOK (PERSISTED IN CONFIG STORE)
     # ════════════════════════════════════════════════════════════════════════
 
     @app.get("/api/addressbook")
     async def get_addressbook(authorized: bool = Depends(verify_auth_header)):
         """Get saved computers."""
-        return {"entries": _address_book_cache}
+        return {"entries": cfg.get_address_book()}
 
     @app.post("/api/addressbook")
     async def save_addressbook(req: AddressBookSaveRequest, authorized: bool = Depends(verify_auth_header)):
         """Save address book entries."""
-        nonlocal _address_book_cache
-        _address_book_cache = req.entries
-        return {"success": True, "count": len(_address_book_cache)}
+        saved = cfg.save_address_book(req.entries)
+        return {"success": True, "count": len(saved)}
 
     # ════════════════════════════════════════════════════════════════════════
     # WEBSOCKET STREAMING & INTERACTIVE TERMINAL
@@ -343,7 +662,7 @@ def create_app(
 
     @app.websocket("/ws/stream")
     async def websocket_stream(websocket: WebSocket, token: Optional[str] = Query(None)):
-        """WebSocket endpoint for remote desktop video frames, chat, and input sync."""
+        """WebSocket endpoint for remote desktop video frames, audio, privacy mode, chat, and input sync."""
         await websocket.accept()
 
         if not auth_manager.validate_session_token(token):
@@ -357,6 +676,9 @@ def create_app(
             input_handler=input_h,
             clipboard_manager=clip,
             default_fps=default_fps,
+            config_store=cfg,
+            privacy_manager=privacy,
+            audio_service=audio,
         )
 
         await session.start()
@@ -371,11 +693,15 @@ def create_app(
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
+        if not cfg.get_permissions().get("allow_terminal", True):
+            await websocket.send_text("\r\n[Error: Terminal access is disabled by Host Security Policy]\r\n")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         term_session = TerminalSession(websocket)
         await term_session.start()
 
     # Mount static web client (supports standard Python and PyInstaller frozen bundle)
-    import sys
     if hasattr(sys, "_MEIPASS"):
         client_dir = Path(sys._MEIPASS) / "client"
     else:

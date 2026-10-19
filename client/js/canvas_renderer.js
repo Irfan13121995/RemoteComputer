@@ -1,6 +1,6 @@
 /**
  * CanvasRenderer - Hardware-accelerated HTML5 Canvas video renderer.
- * Handles high-DPI scaling, letterboxing, and coordinate space normalization.
+ * Handles high-DPI scaling, letterboxing, remote cursor overlay, and coordinate space normalization.
  */
 
 class CanvasRenderer {
@@ -11,6 +11,8 @@ class CanvasRenderer {
     this.remoteWidth = 1920;
     this.remoteHeight = 1080;
     this.scalingMode = 'fit'; // 'fit' | 'fill' | 'original'
+    this.showRemoteCursor = true;
+    this.remoteCursor = { x: 0.5, y: 0.5 };
 
     // Letterbox layout calculations
     this.layout = {
@@ -22,7 +24,6 @@ class CanvasRenderer {
       scaleY: 1.0,
     };
 
-    // Listen to window resize
     window.addEventListener('resize', () => this.resizeCanvas());
     this.resizeCanvas();
   }
@@ -37,7 +38,7 @@ class CanvasRenderer {
     this.canvas.style.width = `${winWidth}px`;
     this.canvas.style.height = `${winHeight}px`;
 
-    this.ctx.scale(dpr, dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.updateLayout();
   }
 
@@ -71,11 +72,9 @@ class CanvasRenderer {
 
     let drawW, drawH;
     if (windowAspect > remoteAspect) {
-      // Window is wider than remote aspect: letterbox left/right
       drawH = winHeight;
       drawW = winHeight * remoteAspect;
     } else {
-      // Window is taller than remote aspect: letterbox top/bottom
       drawW = winWidth;
       drawH = winWidth / remoteAspect;
     }
@@ -96,13 +95,20 @@ class CanvasRenderer {
     }
   }
 
+  setRemoteCursor(normX, normY) {
+    if (typeof normX === 'number' && typeof normY === 'number') {
+      this.remoteCursor.x = normX;
+      this.remoteCursor.y = normY;
+    }
+  }
+
   setScalingMode(mode) {
     this.scalingMode = mode;
     this.updateLayout();
   }
 
   /**
-   * Render an ImageBitmap or Image element onto the canvas.
+   * Render an ImageBitmap or Image element onto the canvas, plus optional remote cursor indicator.
    */
   renderFrame(imageSource) {
     const winWidth = window.innerWidth;
@@ -119,6 +125,22 @@ class CanvasRenderer {
       this.layout.offsetX, this.layout.offsetY,
       this.layout.drawWidth, this.layout.drawHeight
     );
+
+    // Render RustDesk-style remote cursor indicator if enabled
+    if (this.showRemoteCursor && this.remoteCursor) {
+      const cx = this.layout.offsetX + this.remoteCursor.x * this.layout.drawWidth;
+      const cy = this.layout.offsetY + this.remoteCursor.y * this.layout.drawHeight;
+
+      this.ctx.save();
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      this.ctx.fillStyle = 'rgba(0, 212, 255, 0.85)';
+      this.ctx.fill();
+      this.ctx.lineWidth = 1.5;
+      this.ctx.strokeStyle = '#ffffff';
+      this.ctx.stroke();
+      this.ctx.restore();
+    }
   }
 
   /**
@@ -129,11 +151,9 @@ class CanvasRenderer {
     const canvasX = clientX - rect.left;
     const canvasY = clientY - rect.top;
 
-    // Relative to the drawn image rectangle
     const imageX = canvasX - this.layout.offsetX;
     const imageY = canvasY - this.layout.offsetY;
 
-    // Check if inside bounds
     const inside = (
       imageX >= 0 &&
       imageX <= this.layout.drawWidth &&

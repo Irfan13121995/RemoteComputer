@@ -15,7 +15,7 @@
   <div id="app-root">
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VIEW A: HUB DASHBOARD (Multi-Tab TeamViewer & Personal-NAS Suite)
+         VIEW A: HUB DASHBOARD (RustDesk + TeamViewer + Personal-NAS Suite)
          ══════════════════════════════════════════════════════════════════════ -->
     <div id="hub-view" class="view-section">
       
@@ -25,7 +25,7 @@
           <div class="brand-icon-box">🖥️</div>
           <div>
             <div class="brand-title">RemoteDesk Pro</div>
-            <div class="brand-subtitle">Self-Hosted Remote Suite</div>
+            <div class="brand-subtitle">RustDesk-Powered Self-Hosted Suite</div>
           </div>
         </div>
 
@@ -35,7 +35,10 @@
             <span>🔀</span> Remote Control
           </button>
           <button class="hub-nav-tab" data-tab="files">
-            <span>📁</span> File Manager
+            <span>📁</span> File Transfer
+          </button>
+          <button class="hub-nav-tab" data-tab="tunnels">
+            <span>🔌</span> TCP Tunnels
           </button>
           <button class="hub-nav-tab" data-tab="terminal">
             <span>💻</span> Terminal
@@ -47,7 +50,7 @@
             <span>📖</span> Address Book
           </button>
           <button class="hub-nav-tab" data-tab="settings">
-            <span>⚙️</span> Settings
+            <span>🛡️</span> Security &amp; Settings
           </button>
         </nav>
 
@@ -58,7 +61,7 @@
           </button>
           <div class="status-indicator">
             <span id="hub-status-dot" class="status-dot"></span>
-            <span id="hub-status-text" style="font-size: 12px; font-weight: 600;">Host Ready</span>
+            <span id="hub-status-text" style="font-size: 12px; font-weight: 600;">Rendezvous Ready</span>
           </div>
         </div>
       </header>
@@ -66,7 +69,7 @@
       <!-- Main Content Area with Dynamic Tab Panes -->
       <main class="hub-content-container">
         
-        <!-- ── TAB 1: REMOTE CONTROL DUAL-CARD HUB ── -->
+        <!-- ── TAB 1: REMOTE CONTROL DUAL-CARD HUB + LAN DISCOVERY ── -->
         <div id="pane-remote" class="hub-tab-pane">
           <div class="hub-grid">
 
@@ -75,7 +78,7 @@
               <div class="card-header">
                 <div>
                   <h2 class="card-title">Allow Remote Control</h2>
-                  <p class="card-subtitle">Share this Partner ID and Password to allow remote connections to this computer.</p>
+                  <p class="card-subtitle">Share this 9-digit Partner ID and One-Time PIN (or Permanent Password) to allow remote connections.</p>
                 </div>
               </div>
 
@@ -90,13 +93,13 @@
                   </div>
                 </div>
 
-                <!-- Password / PIN -->
+                <!-- One-Time Password / PIN -->
                 <div class="credential-row">
-                  <span class="badge-tag pass-tag">Password</span>
+                  <span class="badge-tag pass-tag">One-Time PIN</span>
                   <div class="credential-value-wrapper">
                     <span id="host-pin-display" class="credential-value">••••••</span>
-                    <button id="btn-regenerate-pin" class="icon-action-btn" title="Generate New Password">🔄</button>
-                    <button id="btn-copy-pin" class="icon-action-btn" title="Copy Password">📋</button>
+                    <button id="btn-regenerate-pin" class="icon-action-btn" title="Generate New One-Time PIN">🔄</button>
+                    <button id="btn-copy-pin" class="icon-action-btn" title="Copy One-Time PIN">📋</button>
                   </div>
                 </div>
               </div>
@@ -108,24 +111,35 @@
                     <span>🖥️</span>
                     <span>Active Display Bounds</span>
                   </div>
-                  <span id="host-display-info" class="font-mono" style="font-weight: 600; color: var(--accent);">3840x2160 (Display 1)</span>
+                  <span id="host-display-info" class="font-mono" style="font-weight: 600; color: var(--accent);">1920x1080 (Display 1)</span>
                 </div>
 
                 <div class="feature-item">
                   <div class="feature-item-left">
                     <span>🔒</span>
-                    <span>Security Protocol</span>
+                    <span>Transport &amp; Discovery</span>
                   </div>
-                  <span id="hub-security-badge" class="font-mono" style="color: var(--green); font-weight: 600;">HTTP (Direct)</span>
+                  <span id="hub-security-badge" class="font-mono" style="color: var(--green); font-weight: 600;">HTTP + UDP 21116</span>
                 </div>
 
                 <div class="feature-item">
                   <div class="feature-item-left">
-                    <span>⚡</span>
-                    <span>Unattended LAN Access</span>
+                    <span>🔑</span>
+                    <span>Permanent Unattended Password</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="perm-pwd-badge" class="font-mono" style="font-size: 11px; color: var(--text-muted);">Not Set</span>
+                    <button id="btn-set-perm-pwd" class="btn-secondary" style="padding: 4px 10px; font-size: 11px;">Configure</button>
+                  </div>
+                </div>
+
+                <div class="feature-item">
+                  <div class="feature-item-left">
+                    <span>🚀</span>
+                    <span>Start Automatically with Windows</span>
                   </div>
                   <label class="switch-wrap">
-                    <input type="checkbox" id="unattended-toggle" checked />
+                    <input type="checkbox" id="autostart-toggle" />
                     <span class="switch-slider"></span>
                   </label>
                 </div>
@@ -137,7 +151,7 @@
               <div class="card-header">
                 <div>
                   <h2 class="card-title">Control Remote Computer</h2>
-                  <p class="card-subtitle">Enter partner ID or IP address to view and control a remote machine.</p>
+                  <p class="card-subtitle">Enter a 9-digit Partner ID (auto-resolved via LAN/Rendezvous) or direct IP:Port.</p>
                 </div>
               </div>
 
@@ -147,7 +161,7 @@
                 <!-- Partner ID / Host Address Input -->
                 <div class="form-group">
                   <label class="form-label" for="partner-id-input">Partner ID or Host Address</label>
-                  <input id="partner-id-input" type="text" class="input font-mono" placeholder="e.g. 349 443 493 or localhost:8000" autocomplete="off" />
+                  <input id="partner-id-input" type="text" class="input font-mono" placeholder="e.g. 360 523 800 or 192.168.1.50:8000" autocomplete="off" />
                 </div>
 
                 <!-- Mode Selection -->
@@ -167,8 +181,8 @@
 
                 <!-- Partner Password -->
                 <div class="form-group">
-                  <label class="form-label" for="partner-password-input">Partner Password / PIN</label>
-                  <input id="partner-password-input" type="password" class="input font-mono" placeholder="Enter remote PIN or password" autocomplete="current-password" />
+                  <label class="form-label" for="partner-password-input">Partner PIN or Permanent Password</label>
+                  <input id="partner-password-input" type="password" class="input font-mono" placeholder="Enter remote One-Time PIN or Permanent Password" autocomplete="current-password" />
                 </div>
 
                 <div id="connect-error" style="color: var(--red); font-size: 13px; font-weight: 500; min-height: 18px;"></div>
@@ -187,20 +201,38 @@
             </div>
 
           </div>
+
+          <!-- RUSTDESK DISCOVERED LAN PEERS BAR -->
+          <div class="card" style="padding: 18px 24px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 18px;">📡</span>
+                <div>
+                  <h3 style="font-size: 15px; font-weight: 800;">Discovered LAN &amp; Rendezvous Peers</h3>
+                  <p style="font-size: 12px; color: var(--text-secondary);">Computers automatically discovered via UDP Port 21116 &amp; Rendezvous Server</p>
+                </div>
+              </div>
+              <button id="btn-refresh-peers" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;">🔄 Scan Network</button>
+            </div>
+            <div id="discovered-peers-grid" class="addr-grid" style="margin-top: 10px;">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
         </div>
 
-        <!-- ── TAB 2: FILE MANAGER ── -->
+        <!-- ── TAB 2: DUAL-CAPABILITY FILE TRANSFER & FOLDER ZIP ── -->
         <div id="pane-files" class="hub-tab-pane hidden">
           <div class="fm-layout">
             <div class="fm-toolbar">
               <div class="fm-drives-bar" id="fm-drives-list">
                 <!-- Populated dynamically: C:\, D:\, Home, Desktop, Downloads -->
               </div>
-              <div style="display: flex; gap: 8px;">
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button id="btn-fm-new-folder" class="btn-secondary">➕ New Folder</button>
+                <button id="btn-fm-zip-current" class="btn-secondary" title="Download current folder as .zip">📦 Download Folder ZIP</button>
                 <label class="btn-primary" style="width: auto; cursor: pointer;">
-                  <span>📤</span> Upload File
-                  <input type="file" id="fm-file-input" style="display: none;" />
+                  <span>📤</span> Upload Files
+                  <input type="file" id="fm-file-input" multiple style="display: none;" />
                 </label>
                 <button id="btn-fm-refresh" class="icon-action-btn" title="Refresh">🔄</button>
               </div>
@@ -211,6 +243,12 @@
               <span>📁</span>
               <span id="fm-current-path" style="flex: 1; word-break: break-all;">Loading...</span>
               <button id="btn-fm-up" class="btn-secondary" style="padding: 4px 10px; font-size: 11px;">⬆ Parent Folder</button>
+            </div>
+
+            <!-- Transfer Queue Status Bar -->
+            <div id="fm-transfer-queue" class="fm-breadcrumb-bar hidden" style="border-color: var(--accent); background: var(--accent-dim);">
+              <span>⚡</span>
+              <span id="fm-transfer-status" style="flex: 1; font-size: 12px;">Ready</span>
             </div>
 
             <!-- File Table -->
@@ -232,7 +270,70 @@
           </div>
         </div>
 
-        <!-- ── TAB 3: REMOTE TERMINAL ── -->
+        <!-- ── TAB 3: RUSTDESK TCP TUNNELING / PORT FORWARDING ── -->
+        <div id="pane-tunnels" class="hub-tab-pane hidden">
+          <div class="hub-grid">
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Create TCP Port Tunnel</h2>
+                  <p class="card-subtitle">Forward a local TCP port to any target host &amp; port on the remote network (SSH, RDP, Web, DB).</p>
+                </div>
+              </div>
+              <form id="tunnel-form" style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="form-group">
+                  <label class="form-label" for="tunnel-name">Tunnel Name / Service</label>
+                  <input id="tunnel-name" type="text" class="input" placeholder="e.g. Internal Web Server, SSH Tunnel" />
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                  <div class="form-group">
+                    <label class="form-label" for="tunnel-listen-port">Local Listen Port</label>
+                    <input id="tunnel-listen-port" type="number" class="input font-mono" placeholder="e.g. 8080" required />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="tunnel-target-port">Remote Target Port</label>
+                    <input id="tunnel-target-port" type="number" class="input font-mono" placeholder="e.g. 80" required />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="tunnel-target-host">Remote Target Host IP</label>
+                  <input id="tunnel-target-host" type="text" class="input font-mono" value="127.0.0.1" required />
+                </div>
+                <button type="submit" class="btn-primary">
+                  <span>🔌</span> Start Port Forwarding Tunnel
+                </button>
+              </form>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">Active TCP Tunnels</h2>
+                  <p class="card-subtitle">Live port-forwarding listeners and traffic counters.</p>
+                </div>
+                <button id="btn-refresh-tunnels" class="icon-action-btn" title="Refresh Tunnels">🔄</button>
+              </div>
+              <div class="fm-table-container" style="max-height: 320px;">
+                <table class="fm-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Local Port</th>
+                      <th>Target</th>
+                      <th>Traffic</th>
+                      <th style="text-align: right;">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tunnels-table-body">
+                    <!-- Populated dynamically -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── TAB 4: REMOTE TERMINAL ── -->
         <div id="pane-terminal" class="hub-tab-pane hidden">
           <div class="terminal-window">
             <div class="terminal-header">
@@ -251,7 +352,7 @@
           </div>
         </div>
 
-        <!-- ── TAB 4: TASK MANAGER & DIAGNOSTICS ── -->
+        <!-- ── TAB 5: TASK MANAGER & DIAGNOSTICS ── -->
         <div id="pane-diagnostics" class="hub-tab-pane hidden">
           
           <!-- Telemetry Gauges -->
@@ -316,13 +417,13 @@
 
         </div>
 
-        <!-- ── TAB 5: ADDRESS BOOK ── -->
+        <!-- ── TAB 6: ADDRESS BOOK ── -->
         <div id="pane-addressbook" class="hub-tab-pane hidden">
           <div class="card">
             <div class="card-header">
               <div>
-                <h2 class="card-title">Saved Computers & Favorites</h2>
-                <p class="card-subtitle">Quickly connect to your frequently accessed machines.</p>
+                <h2 class="card-title">Saved Computers &amp; Favorites</h2>
+                <p class="card-subtitle">Quickly connect to your frequently accessed machines (persisted in %APPDATA%).</p>
               </div>
               <button id="btn-add-contact" class="btn-primary" style="width: auto;">➕ Add Machine</button>
             </div>
@@ -333,68 +434,135 @@
           </div>
         </div>
 
-        <!-- ── TAB 6: SETTINGS ── -->
+        <!-- ── TAB 7: RUSTDESK SECURITY PERMISSIONS, RENDEZVOUS & STREAM SETTINGS ── -->
         <div id="pane-settings" class="hub-tab-pane hidden">
-          <div class="card" style="max-width: 680px; margin: 0 auto; width: 100%;">
-            <div class="card-header">
-              <div>
-                <h2 class="card-title">Stream & Security Settings</h2>
-                <p class="card-subtitle">Configure video codec, performance presets, and accessibility.</p>
+          <div class="hub-grid">
+
+            <!-- Left Column: Granular Session Permissions & Rendezvous Server -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">🛡️ RustDesk Security &amp; Permissions</h2>
+                  <p class="card-subtitle">Control what connected remote peers are allowed to do on this computer.</p>
+                </div>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="feature-item">
+                  <span>🖱️ Enable Keyboard &amp; Mouse Control</span>
+                  <input type="checkbox" id="perm-keyboard-mouse" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>📋 Enable Clipboard Synchronization</span>
+                  <input type="checkbox" id="perm-clipboard" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>📁 Enable File Transfer &amp; Folder ZIP</span>
+                  <input type="checkbox" id="perm-file-transfer" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>🔊 Enable Audio Capture Streaming</span>
+                  <input type="checkbox" id="perm-audio" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>🔌 Enable TCP Port Tunneling</span>
+                  <input type="checkbox" id="perm-tcp-tunnel" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>💻 Enable Interactive Remote Terminal</span>
+                  <input type="checkbox" id="perm-terminal" checked style="accent-color: var(--accent);" />
+                </div>
+                <div class="feature-item">
+                  <span>🕵️ Allow Privacy Mode (Screen Blanking)</span>
+                  <input type="checkbox" id="perm-privacy" checked style="accent-color: var(--accent);" />
+                </div>
+              </div>
+
+              <!-- Rendezvous / Relay Server Configuration -->
+              <div style="border-top: 1px solid var(--border-light); padding-top: 14px; display: flex; flex-direction: column; gap: 10px;">
+                <div style="font-weight: 700; font-size: 13px;">🌐 ID / Rendezvous Server (`hbbs` / `hbbr`)</div>
+                <input id="setting-rendezvous-url" type="text" class="input font-mono" placeholder="Custom Rendezvous URL (leave blank for built-in)" style="padding: 8px 12px; font-size: 12px;" />
+                <input id="setting-ip-whitelist" type="text" class="input font-mono" placeholder="IP Whitelist comma-separated (optional)" style="padding: 8px 12px; font-size: 12px;" />
+              </div>
+
+              <button id="btn-save-permissions" class="btn-primary">
+                Save Security &amp; Network Policy
+              </button>
+            </div>
+
+            <!-- Right Column: Codec Settings + Active Sessions / Audit Log -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h2 class="card-title">⚙️ Video Codec &amp; Active Sessions</h2>
+                  <p class="card-subtitle">Configure adaptive bitrate, static frame skipping, and inspect connected peers.</p>
+                </div>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="feature-item">
+                  <div>
+                    <div style="font-weight: 600;">Image Encoding Format</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">WebP for low bandwidth; JPEG for low CPU</div>
+                  </div>
+                  <select id="hub-setting-format" class="tb-select" style="min-width: 140px;">
+                    <option value="webp" selected>WebP (Recommended)</option>
+                    <option value="jpeg">JPEG</option>
+                  </select>
+                </div>
+
+                <div class="feature-item">
+                  <div>
+                    <div style="font-weight: 600;">Quality: <span id="hub-val-quality" style="color: var(--accent);">70%</span></div>
+                  </div>
+                  <input id="hub-setting-quality" type="range" min="20" max="95" value="70" style="accent-color: var(--accent);" />
+                </div>
+
+                <div class="feature-item">
+                  <div>
+                    <div style="font-weight: 600;">Frame Rate: <span id="hub-val-fps" style="color: var(--accent);">30 FPS</span></div>
+                  </div>
+                  <input id="hub-setting-fps" type="range" min="10" max="60" step="5" value="30" style="accent-color: var(--accent);" />
+                </div>
+
+                <div class="feature-item">
+                  <div>
+                    <div style="font-weight: 600;">Display Scaling</div>
+                  </div>
+                  <select id="hub-setting-scaling" class="tb-select" style="min-width: 140px;">
+                    <option value="fit" selected>Fit Aspect (Letterbox)</option>
+                    <option value="fill">Fill / Stretch Window</option>
+                    <option value="original">Original 1:1</option>
+                  </select>
+                </div>
+
+                <div class="feature-item">
+                  <span>⚡ Static Frame Skipping (0 KB/s when desktop idle)</span>
+                  <input type="checkbox" id="hub-setting-skip-static" style="accent-color: var(--accent);" />
+                </div>
+
+                <div class="feature-item">
+                  <span>⌘ Translate Mac Command to Ctrl</span>
+                  <input type="checkbox" id="hub-setting-map-cmd" checked style="accent-color: var(--accent);" />
+                </div>
+              </div>
+
+              <button id="btn-save-hub-settings" class="btn-secondary">
+                Apply Stream Configuration
+              </button>
+
+              <!-- Active Sessions & Audit Log -->
+              <div style="border-top: 1px solid var(--border-light); padding-top: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-weight: 700; font-size: 12px; text-transform: uppercase; color: var(--text-secondary);">Active Sessions &amp; Security Log</span>
+                  <button id="btn-refresh-security-log" class="icon-action-btn" style="width: 24px; height: 24px; font-size: 11px;">🔄</button>
+                </div>
+                <div id="security-audit-list" style="max-height: 110px; overflow-y: auto; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px;">
+                  <!-- Populated dynamically -->
+                </div>
               </div>
             </div>
 
-            <div style="display: flex; flex-direction: column; gap: 16px;">
-              <div class="feature-item">
-                <div>
-                  <div style="font-weight: 600;">Image Encoding Format</div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">WebP for low bandwidth; JPEG for low CPU</div>
-                </div>
-                <select id="hub-setting-format" class="tb-select" style="min-width: 140px;">
-                  <option value="webp" selected>WebP (Recommended)</option>
-                  <option value="jpeg">JPEG</option>
-                </select>
-              </div>
-
-              <div class="feature-item">
-                <div>
-                  <div style="font-weight: 600;">Quality: <span id="hub-val-quality" style="color: var(--accent);">70%</span></div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">Visual quality vs network bitrate</div>
-                </div>
-                <input id="hub-setting-quality" type="range" min="20" max="95" value="70" style="accent-color: var(--accent);" />
-              </div>
-
-              <div class="feature-item">
-                <div>
-                  <div style="font-weight: 600;">Frame Rate: <span id="hub-val-fps" style="color: var(--accent);">30 FPS</span></div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">Target capture updates per second</div>
-                </div>
-                <input id="hub-setting-fps" type="range" min="10" max="60" step="5" value="30" style="accent-color: var(--accent);" />
-              </div>
-
-              <div class="feature-item">
-                <div>
-                  <div style="font-weight: 600;">Display Scaling</div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">How remote screen fits browser viewport</div>
-                </div>
-                <select id="hub-setting-scaling" class="tb-select" style="min-width: 140px;">
-                  <option value="fit" selected>Fit Aspect (Letterbox)</option>
-                  <option value="fill">Fill / Stretch Window</option>
-                  <option value="original">Original 1:1</option>
-                </select>
-              </div>
-
-              <div class="feature-item">
-                <div>
-                  <div style="font-weight: 600;">Translate Mac Command (⌘) to Ctrl</div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">Seamlessly map shortcuts on macOS client</div>
-                </div>
-                <input type="checkbox" id="hub-setting-map-cmd" checked style="accent-color: var(--accent);" />
-              </div>
-            </div>
-
-            <button id="btn-save-hub-settings" class="btn-primary" style="margin-top: 10px;">
-              Save & Apply Configuration
-            </button>
           </div>
         </div>
 
@@ -404,13 +572,13 @@
       <footer class="hub-footer">
         <div class="status-indicator">
           <span class="status-dot"></span>
-          <span>Ready to connect (secure TLS/WSS enclave)</span>
+          <span>Ready to connect (LAN Discovery UDP 21116 + Rendezvous Active)</span>
         </div>
         <div id="hub-ip-list" class="font-mono" style="font-size: 11px; color: var(--text-muted);">
           LAN: Loading local IPs...
         </div>
         <div>
-          <span>RemoteDesk Pro v1.0.0</span>
+          <span>RemoteDesk Pro v2.0.0</span>
         </div>
       </footer>
 
@@ -452,6 +620,7 @@
 
         <!-- Quality Preset -->
         <select id="session-quality-select" class="tb-select" title="Stream Quality Preset">
+          <option value="auto">⚡ Auto Adaptive</option>
           <option value="high">High (60 FPS)</option>
           <option value="balanced" selected>Balanced (30 FPS)</option>
           <option value="low">Low Bandwidth (20 FPS)</option>
@@ -459,13 +628,25 @@
 
         <div class="tb-divider"></div>
 
-        <!-- Interactive Controls -->
+        <!-- Interactive Controls (Including RustDesk Audio, Privacy Mode, Remote Cursor) -->
+        <button id="btn-session-audio" class="tb-btn" title="Toggle Remote Audio Streaming">
+          <span>🔇</span> Audio
+        </button>
+
+        <button id="btn-session-privacy" class="tb-btn" title="Toggle RustDesk Privacy Mode (Black Remote Screen)">
+          <span>🕵️</span> Privacy
+        </button>
+
+        <button id="btn-session-cursor" class="tb-btn active" title="Show/Hide Remote Cursor">
+          <span>🖱️</span>
+        </button>
+
         <button id="btn-session-pointer-lock" class="tb-btn" title="Lock Mouse Cursor (L)">
           <span>🔒</span> Lock Mouse
         </button>
 
         <button id="btn-session-fullscreen" class="tb-btn" title="Toggle Fullscreen (F)">
-          <span>⛶</span> Fullscreen
+          <span>⛶</span>
         </button>
 
         <button id="btn-session-screenshot" class="tb-btn" title="Take Instant Screenshot (PNG)">
@@ -473,7 +654,7 @@
         </button>
 
         <button id="btn-session-record" class="tb-btn" title="Record Session Video (.webm)">
-          <span>⏺️</span> Record
+          <span>⏺️</span> Rec
         </button>
 
         <button id="btn-session-vk" class="tb-btn" title="Toggle On-Screen Keyboard">
@@ -481,12 +662,12 @@
         </button>
 
         <button id="btn-session-chat" class="tb-btn" title="Live In-Session Chat">
-          <span>💬</span> Chat
+          <span>💬</span>
         </button>
 
         <!-- Macro Actions Dropdown Trigger -->
         <div style="position: relative;">
-          <button id="btn-session-actions" class="tb-btn" title="Quick Actions & Macros">
+          <button id="btn-session-actions" class="tb-btn" title="Quick Actions &amp; Macros">
             <span>⚡</span> Actions
           </button>
           <div id="session-actions-dropdown" class="dropdown-menu hidden">
@@ -528,8 +709,8 @@
         </button>
 
         <!-- Exit / Disconnect Button -->
-        <button id="btn-session-disconnect" class="tb-btn danger" title="End Session & Return to Hub">
-          <span>✕</span> End Session
+        <button id="btn-session-disconnect" class="tb-btn danger" title="End Session &amp; Return to Hub">
+          <span>✕</span> End
         </button>
       </div>
 
@@ -593,7 +774,7 @@
 
 
   <!-- ══════════════════════════════════════════════════════════════════════
-       MODALS: CLIPBOARD, ADD CONTACT, NEW FOLDER
+       MODALS: CLIPBOARD, ADD CONTACT, PERMANENT PASSWORD
        ══════════════════════════════════════════════════════════════════════ -->
 
   <!-- Modal: Virtual Clipboard Bridge -->
@@ -636,7 +817,7 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="contact-id">Partner ID or IP Address</label>
-          <input id="contact-id" type="text" class="input font-mono" placeholder="e.g. 349 443 493 or 192.168.1.50:8000" required />
+          <input id="contact-id" type="text" class="input font-mono" placeholder="e.g. 360 523 800 or 192.168.1.50:8000" required />
         </div>
         <div class="form-group">
           <label class="form-label" for="contact-pwd">Saved Password (Optional)</label>

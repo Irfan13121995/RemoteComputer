@@ -1,4 +1,4 @@
-"""WebSocket streaming session manager, backpressure controller, and chat/input router."""
+"""WebSocket streaming session manager, adaptive bitrate controller, audio streamer, privacy mode, and input router."""
 
 import asyncio
 import json
@@ -8,8 +8,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from core.audio_service import AudioService
 from core.clipboard import ClipboardManager
+from core.config_store import ConfigStore
 from core.input_handler import InputHandler
+from core.privacy_mode import PrivacyModeManager
 from core.screen import ScreenCapture
 
 logger = logging.getLogger(__name__)
@@ -25,26 +28,46 @@ class ClientSession:
         input_handler: InputHandler,
         clipboard_manager: ClipboardManager,
         default_fps: int = 30,
+        config_store: Optional[ConfigStore] = None,
+        privacy_manager: Optional[PrivacyModeManager] = None,
+        audio_service: Optional[AudioService] = None,
     ):
         self.ws = websocket
         self.screen = screen_capture
         self.input = input_handler
         self.clipboard = clipboard_manager
+        self.config_store = config_store
+        self.privacy = privacy_manager or PrivacyModeManager()
+        self.audio = audio_service or AudioService()
 
         self.fps = max(5, min(60, default_fps))
+        self.adaptive_quality = False
+        self.skip_static_frames = False
+        self.last_rtt_ms = 20
+
         self.is_running = False
         self.frame_seq = 0
         self.last_client_ack_seq = 0
         self.max_inflight_frames = 1  # Low latency backpressure: 1 in-flight frame max
+        self._last_sent_time = 0.0
 
         self._stream_task: Optional[asyncio.Task] = None
         self._clipboard_task: Optional[asyncio.Task] = None
+        self._audio_task: Optional[asyncio.Task] = None
+
+    def _perm_allowed(self, perm_key: str) -> bool:
+        """Check if host security permissions allow the requested capability."""
+        if self.config_store is None:
+            return True
+        perms = self.config_store.get_permissions()
+        return bool(perms.get(perm_key, True))
 
     async def start(self) -> None:
-        """Start streaming and input listener loops."""
+        """Start streaming, audio, and input listener loops."""
         self.is_running = True
         self._stream_task = asyncio.create_task(self._streaming_loop())
         self._clipboard_task = asyncio.create_task(self._clipboard_monitor_loop())
+        self._audio_task = asyncio.create_task(self._audio_streaming_loop())
 
         try:
             await self._incoming_message_loop()
@@ -56,16 +79,19 @@ class ClientSession:
             await self.stop()
 
     async def stop(self) -> None:
-        """Clean up session tasks and release inputs."""
+        """Clean up session tasks, release inputs, and disable privacy curtain."""
         self.is_running = False
 
-        if self._stream_task and not self._stream_task.done():
-            self._stream_task.cancel()
-        if self._clipboard_task and not self._clipboard_task.done():
-            self._clipboard_task.cancel()
+        for task in (self._stream_task, self._clipboard_task, self._audio_task):
+            if task and not task.done():
+                task.cancel()
 
         # Release any stuck keys or mouse buttons
         self.input.release_all()
+
+        # Automatically turn off Privacy Mode if it was left on during the session
+        if self.privacy.enabled:
+            self.privacy.set_privacy_mode(False)
 
         try:
             await self.ws.close()
@@ -81,7 +107,6 @@ class ClientSession:
             now = time.time()
             elapsed = now - last_frame_time
 
-            # Maintain target frame rate
             if elapsed < target_interval:
                 await asyncio.sleep(target_interval - elapsed)
 
@@ -93,13 +118,22 @@ class ClientSession:
             last_frame_time = time.time()
 
             try:
-                # Capture in worker thread to prevent event loop blocking
                 frame_bytes, has_changed, meta = await asyncio.to_thread(self.screen.capture_frame)
 
+                # RustDesk-style static frame skipping when enabled (always send first frame or keyframe every 1.5s)
+                if (
+                    self.skip_static_frames
+                    and self.frame_seq > 1
+                    and not has_changed
+                    and (time.time() - self._last_sent_time) < 1.5
+                ):
+                    continue
+
                 self.frame_seq += 1
+                self._last_sent_time = time.time()
                 meta["seq"] = self.frame_seq
 
-                # 1. Send frame metadata JSON
+                # 1. Send frame metadata JSON (includes remote cursor position)
                 await self.ws.send_text(
                     json.dumps(
                         {
@@ -111,6 +145,8 @@ class ClientSession:
                             "scaled_height": meta["scaled_height"],
                             "format": meta["format"],
                             "size": meta["bytes_size"],
+                            "cursor_x": meta.get("cursor_x", 0.5),
+                            "cursor_y": meta.get("cursor_y", 0.5),
                             "timestamp": meta["timestamp"],
                         }
                     )
@@ -125,8 +161,24 @@ class ClientSession:
                 logger.error(f"Error in streaming loop: {e}")
                 await asyncio.sleep(0.1)
 
+    async def _audio_streaming_loop(self) -> None:
+        """Streams remote audio chunks when audio is unmuted and permitted."""
+        while self.is_running:
+            try:
+                if not self.audio.muted and self._perm_allowed("allow_audio"):
+                    chunk = await asyncio.to_thread(self.audio.capture_audio_chunk, 180)
+                    await self.ws.send_text(json.dumps(chunk))
+                    await asyncio.sleep(0.18)
+                else:
+                    await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Audio stream loop error: {e}")
+                await asyncio.sleep(0.5)
+
     async def _incoming_message_loop(self) -> None:
-        """Handles incoming control, input, ping, and chat packets from client."""
+        """Handles incoming control, input, ping, audio, privacy, and chat packets from client."""
         while self.is_running:
             raw_msg = await self.ws.receive_text()
             try:
@@ -137,8 +189,25 @@ class ClientSession:
             except Exception as e:
                 logger.debug(f"Error handling client message: {e}")
 
+    def _adjust_adaptive_quality(self, rtt_ms: float) -> None:
+        """Dynamically adjust quality and FPS based on network RTT latency (RustDesk Auto Quality)."""
+        if not self.adaptive_quality:
+            return
+        if rtt_ms < 25:
+            self.screen.quality = 80
+            self.fps = 45
+        elif rtt_ms < 75:
+            self.screen.quality = 65
+            self.fps = 30
+        elif rtt_ms < 150:
+            self.screen.quality = 50
+            self.fps = 20
+        else:
+            self.screen.quality = 35
+            self.fps = 15
+
     async def _process_client_message(self, msg: Dict[str, Any]) -> None:
-        """Dispatch client commands to core modules."""
+        """Dispatch client commands to core modules while enforcing host permissions."""
         msg_type = msg.get("type")
 
         # 1. Frame acknowledgment for backpressure
@@ -147,9 +216,12 @@ class ClientSession:
             if seq > self.last_client_ack_seq:
                 self.last_client_ack_seq = seq
 
-        # 2. Ping / Pong for latency measurement
+        # 2. Ping / Pong for latency measurement & adaptive bitrate
         elif msg_type == "ping":
             client_time = msg.get("t", 0)
+            if "last_rtt" in msg:
+                self.last_rtt_ms = float(msg["last_rtt"])
+                self._adjust_adaptive_quality(self.last_rtt_ms)
             await self.ws.send_text(
                 json.dumps(
                     {
@@ -160,63 +232,36 @@ class ClientSession:
                 )
             )
 
-        # 3. Mouse Movement (Normalized 0.0 - 1.0)
-        elif msg_type == "mousemove":
-            x = msg.get("x", 0.0)
-            y = msg.get("y", 0.0)
-            mon_rect = self.screen.get_current_monitor_rect()
-            self.input.handle_mouse_move(x, y, mon_rect)
+        # 3. Mouse & Keyboard Input (requires allow_keyboard_mouse permission)
+        elif msg_type in ("mousemove", "mousemove_rel", "mousedown", "mouseup", "click", "wheel", "keydown", "keyup", "type_text", "special"):
+            if not self._perm_allowed("allow_keyboard_mouse"):
+                return
 
-        # 4. Mouse Movement Relative (Pointer Lock)
-        elif msg_type == "mousemove_rel":
-            dx = msg.get("dx", 0.0)
-            dy = msg.get("dy", 0.0)
-            self.input.handle_mouse_move_relative(dx, dy)
+            if msg_type == "mousemove":
+                mon_rect = self.screen.get_current_monitor_rect()
+                self.input.handle_mouse_move(msg.get("x", 0.0), msg.get("y", 0.0), mon_rect)
+            elif msg_type == "mousemove_rel":
+                self.input.handle_mouse_move_relative(msg.get("dx", 0.0), msg.get("dy", 0.0))
+            elif msg_type == "mousedown":
+                self.input.handle_mouse_button(msg.get("button", 0), is_down=True)
+            elif msg_type == "mouseup":
+                self.input.handle_mouse_button(msg.get("button", 0), is_down=False)
+            elif msg_type == "click":
+                self.input.handle_mouse_click(msg.get("button", 0), msg.get("count", 1))
+            elif msg_type == "wheel":
+                self.input.handle_mouse_scroll(msg.get("dx", 0.0), msg.get("dy", 0.0))
+            elif msg_type == "keydown":
+                self.input.handle_keyboard(msg.get("key", ""), msg.get("code"), is_down=True)
+            elif msg_type == "keyup":
+                self.input.handle_keyboard(msg.get("key", ""), msg.get("code"), is_down=False)
+            elif msg_type == "type_text":
+                text = msg.get("text", "")
+                if text:
+                    self.input.type_text(text)
+            elif msg_type == "special":
+                self.input.trigger_special_action(msg.get("action", ""))
 
-        # 5. Mouse Button Press/Release
-        elif msg_type == "mousedown":
-            btn = msg.get("button", 0)
-            self.input.handle_mouse_button(btn, is_down=True)
-
-        elif msg_type == "mouseup":
-            btn = msg.get("button", 0)
-            self.input.handle_mouse_button(btn, is_down=False)
-
-        # 6. Mouse Click
-        elif msg_type == "click":
-            btn = msg.get("button", 0)
-            count = msg.get("count", 1)
-            self.input.handle_mouse_click(btn, count)
-
-        # 7. Mouse Wheel
-        elif msg_type == "wheel":
-            dx = msg.get("dx", 0.0)
-            dy = msg.get("dy", 0.0)
-            self.input.handle_mouse_scroll(dx, dy)
-
-        # 8. Keyboard
-        elif msg_type == "keydown":
-            key = msg.get("key", "")
-            code = msg.get("code")
-            self.input.handle_keyboard(key, code, is_down=True)
-
-        elif msg_type == "keyup":
-            key = msg.get("key", "")
-            code = msg.get("code")
-            self.input.handle_keyboard(key, code, is_down=False)
-
-        # 9. Type Full Text
-        elif msg_type == "type_text":
-            text = msg.get("text", "")
-            if text:
-                self.input.type_text(text)
-
-        # 10. Special Macro Action
-        elif msg_type == "special":
-            action = msg.get("action", "")
-            self.input.trigger_special_action(action)
-
-        # 11. View-Only Toggle
+        # 4. View-Only Toggle
         elif msg_type == "set_view_only":
             self.input.view_only = bool(msg.get("view_only", False))
             await self.ws.send_text(
@@ -228,12 +273,39 @@ class ClientSession:
                 )
             )
 
-        # 12. In-Session Live Text Chat
+        # 5. RustDesk Privacy Mode Toggle
+        elif msg_type == "privacy_mode":
+            if self._perm_allowed("privacy_mode_allowed"):
+                enable = bool(msg.get("enabled", False))
+                status = self.privacy.set_privacy_mode(enable)
+                await self.ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "privacy_mode_status",
+                            "enabled": status["enabled"],
+                            "mode": status["mode"],
+                        }
+                    )
+                )
+
+        # 6. RustDesk Remote Audio Mute/Unmute Toggle
+        elif msg_type == "audio_toggle":
+            muted = bool(msg.get("muted", True))
+            self.audio.set_muted(muted)
+            await self.ws.send_text(
+                json.dumps(
+                    {
+                        "type": "audio_status",
+                        "muted": self.audio.muted,
+                    }
+                )
+            )
+
+        # 7. In-Session Live Text Chat
         elif msg_type == "chat":
             text = msg.get("text", "").strip()
             sender = msg.get("sender", "Client")
             if text:
-                # Echo chat message back to participants with timestamp
                 await self.ws.send_text(
                     json.dumps(
                         {
@@ -245,8 +317,12 @@ class ClientSession:
                     )
                 )
 
-        # 13. Dynamic Stream Quality & FPS Configuration
+        # 8. Dynamic Stream Quality, Adaptive Bitrate & FPS Configuration
         elif msg_type == "config":
+            if "adaptive" in msg:
+                self.adaptive_quality = bool(msg["adaptive"])
+            if "skip_static" in msg:
+                self.skip_static_frames = bool(msg["skip_static"])
             if "fps" in msg:
                 self.fps = max(5, min(60, int(msg["fps"])))
             if "quality" in msg:
@@ -261,7 +337,6 @@ class ClientSession:
                 mon_idx = int(msg["monitor"])
                 self.screen.set_monitor(mon_idx)
 
-            # Echo updated config back
             await self.ws.send_text(
                 json.dumps(
                     {
@@ -271,30 +346,33 @@ class ClientSession:
                         "scale": self.screen.scale,
                         "format": self.screen.format,
                         "monitor": self.screen.monitor_index,
+                        "adaptive": self.adaptive_quality,
                     }
                 )
             )
 
-        # 14. Clipboard sync from client
+        # 9. Clipboard sync from client
         elif msg_type == "clipboard_set":
-            text = msg.get("text", "")
-            if text:
-                self.clipboard.set_text(text)
+            if self._perm_allowed("allow_clipboard"):
+                text = msg.get("text", "")
+                if text:
+                    self.clipboard.set_text(text)
 
     async def _clipboard_monitor_loop(self) -> None:
         """Polls host clipboard for external changes and notifies client."""
         while self.is_running:
             try:
-                new_text = self.clipboard.has_changed()
-                if new_text is not None:
-                    await self.ws.send_text(
-                        json.dumps(
-                            {
-                                "type": "clipboard_sync",
-                                "text": new_text,
-                            }
+                if self._perm_allowed("allow_clipboard"):
+                    new_text = self.clipboard.has_changed()
+                    if new_text is not None:
+                        await self.ws.send_text(
+                            json.dumps(
+                                {
+                                    "type": "clipboard_sync",
+                                    "text": new_text,
+                                }
+                            )
                         )
-                    )
             except Exception as e:
                 logger.debug(f"Clipboard poll error: {e}")
             await asyncio.sleep(1.0)

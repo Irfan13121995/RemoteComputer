@@ -1,20 +1,22 @@
-"""High-performance multi-monitor screen capture and encoding engine with headless/locked fallback."""
+"""High-performance multi-monitor screen capture and encoding engine with cursor tracking and headless/locked fallback."""
 
+import ctypes
 import io
 import logging
+import platform
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import mss
 import mss.exception
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 
 
 class ScreenCapture:
-    """Handles monitor enumeration, desktop frame grabbing, diffing, encoding, and headless fallback."""
+    """Handles monitor enumeration, desktop frame grabbing, diffing, cursor tracking, encoding, and headless fallback."""
 
     def __init__(
         self,
@@ -30,6 +32,7 @@ class ScreenCapture:
             self.format = "jpeg"
         self.quality = max(10, min(100, quality))
         self.scale = max(0.25, min(1.0, scale))
+        self.is_windows = platform.system() == "Windows"
 
         self._last_frame_hash: Optional[int] = None
         self._last_thumbnail: Optional[np.ndarray] = None
@@ -38,7 +41,6 @@ class ScreenCapture:
     def _ensure_sct(self) -> Any:
         """Initialize mss instance lazily."""
         if self._sct is None:
-            # Support both mss.MSS (newer) and mss.mss (legacy)
             if hasattr(mss, "MSS"):
                 self._sct = mss.MSS()
             else:
@@ -104,18 +106,41 @@ class ScreenCapture:
         except Exception:
             return {"left": 0, "top": 0, "width": 1920, "height": 1080}
 
+    def get_normalized_cursor_pos(self, mon_rect: Dict[str, int]) -> Tuple[float, float]:
+        """Return normalized (0.0 - 1.0) cursor coordinates relative to the active monitor."""
+        try:
+            if self.is_windows:
+                class POINT(ctypes.Structure):
+                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+                pt = POINT()
+                ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                cx, cy = pt.x, pt.y
+            else:
+                from pynput.mouse import Controller
+
+                cx, cy = Controller().position
+
+            left = mon_rect.get("left", 0)
+            top = mon_rect.get("top", 0)
+            width = max(1, mon_rect.get("width", 1920))
+            height = max(1, mon_rect.get("height", 1080))
+            nx = max(0.0, min(1.0, (cx - left) / width))
+            ny = max(0.0, min(1.0, (cy - top) / height))
+            return round(nx, 4), round(ny, 4)
+        except Exception:
+            return 0.5, 0.5
+
     def _generate_fallback_frame(self, width: int = 1920, height: int = 1080, message: str = "Host Screen Protected / Headless Mode") -> Image.Image:
         """Generate an informative placeholder frame when display DC is inaccessible (e.g. headless/UAC)."""
         img = Image.new("RGB", (width, height), color=(18, 22, 31))
         draw = ImageDraw.Draw(img)
 
-        # Draw grid accent lines
         for x in range(0, width, 120):
             draw.line([(x, 0), (x, height)], fill=(28, 33, 45), width=1)
         for y in range(0, height, 120):
             draw.line([(0, y), (width, y)], fill=(28, 33, 45), width=1)
 
-        # Center card
         card_w, card_h = 600, 240
         cx, cy = width // 2, height // 2
         draw.rectangle(
@@ -170,7 +195,7 @@ class ScreenCapture:
         has_changed = True
         if self._last_thumbnail is not None:
             diff = np.mean(np.abs(thumb_np.astype(np.int16) - self._last_thumbnail.astype(np.int16)))
-            if diff < 1.0:
+            if diff < 0.8:
                 has_changed = False
 
         self._last_thumbnail = thumb_np
@@ -183,6 +208,7 @@ class ScreenCapture:
             img.save(buf, format="JPEG", quality=self.quality, optimize=False)
 
         encoded_bytes = buf.getvalue()
+        cursor_x, cursor_y = self.get_normalized_cursor_pos(mon_rect)
 
         meta = {
             "width": orig_w,
@@ -192,6 +218,9 @@ class ScreenCapture:
             "monitor_index": self.monitor_index,
             "format": self.format,
             "bytes_size": len(encoded_bytes),
+            "cursor_x": cursor_x,
+            "cursor_y": cursor_y,
+            "has_changed": has_changed,
             "timestamp": time.time(),
         }
 
