@@ -31,6 +31,7 @@ hiddenimports = [
     'fastapi.middleware.cors',
     'websockets',
     'cryptography',
+    'qrcode',
 ]
 
 a = Analysis(

@@ -18,13 +18,20 @@ class InputController {
     this.lastMouseMoveTime = 0;
     this.mouseMoveThrottleMs = 12; // ~80Hz max update rate
 
-    // Touch tracking
+    // Touch & Mobile Trackpad tracking
+    this.touchMode = localStorage.getItem('rd_touch_mode') || 'touch'; // 'touch' | 'trackpad'
     this.lastTouchPos = null;
+    this.lastRawTouch = null;
     this.touchStartTime = 0;
+    this.touchMovedDistance = 0;
+    this.maxTouchesInGesture = 0;
+    this.longPressTimer = null;
+    this.longPressTriggered = false;
 
     this.initEventListeners();
     this.initDragAndDrop();
     this.initVirtualKeyboard();
+    this.initMobileSoftKeyboard();
   }
 
   setEnabled(enabled) {
@@ -33,6 +40,27 @@ class InputController {
 
   setViewOnly(viewOnly) {
     this.viewOnly = viewOnly;
+  }
+
+  setTouchMode(mode) {
+    this.touchMode = mode === 'trackpad' ? 'trackpad' : 'touch';
+    localStorage.setItem('rd_touch_mode', this.touchMode);
+    this.vibrate(15);
+    return this.touchMode;
+  }
+
+  toggleTouchMode() {
+    return this.setTouchMode(this.touchMode === 'touch' ? 'trackpad' : 'touch');
+  }
+
+  vibrate(ms = 25) {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.vibrate === 'function') {
+        window.AndroidBridge.vibrate(ms);
+      } else if (navigator.vibrate) {
+        navigator.vibrate(ms);
+      }
+    } catch (e) {}
   }
 
   initEventListeners() {
@@ -70,6 +98,7 @@ class InputController {
     this.canvas.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
     this.canvas.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
     this.canvas.addEventListener('touchend', (e) => this.onTouchEnd(e), { passive: false });
+    this.canvas.addEventListener('touchcancel', () => this.clearLongPress());
   }
 
   initDragAndDrop() {
@@ -107,12 +136,56 @@ class InputController {
         const key = e.currentTarget.getAttribute('data-key');
         if (!key || !this.enabled) return;
 
+        this.vibrate(15);
         this.send({ type: 'keydown', key, code: key });
         setTimeout(() => {
           this.send({ type: 'keyup', key, code: key });
-        }, 100);
+        }, 90);
       });
     });
+  }
+
+  initMobileSoftKeyboard() {
+    const imeInput = document.getElementById('mobile-ime-input');
+    if (!imeInput) return;
+
+    imeInput.addEventListener('input', (e) => {
+      if (!this.enabled || this.viewOnly) {
+        imeInput.value = '';
+        return;
+      }
+      const val = imeInput.value;
+      if (val && val.length > 0) {
+        for (const ch of val) {
+          this.send({ type: 'keydown', key: ch, code: '' });
+          this.send({ type: 'keyup', key: ch, code: '' });
+        }
+      }
+      imeInput.value = '';
+    });
+
+    imeInput.addEventListener('keydown', (e) => {
+      if (!this.enabled || this.viewOnly) return;
+      if (['Backspace', 'Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        this.send({ type: 'keydown', key: e.key, code: e.code || e.key });
+        setTimeout(() => {
+          this.send({ type: 'keyup', key: e.key, code: e.code || e.key });
+        }, 60);
+      }
+    });
+  }
+
+  openMobileSoftKeyboard() {
+    const imeInput = document.getElementById('mobile-ime-input');
+    if (imeInput) {
+      imeInput.value = '';
+      imeInput.focus();
+      imeInput.click();
+    }
+    if (window.AndroidBridge && typeof window.AndroidBridge.showSoftKeyboard === 'function') {
+      window.AndroidBridge.showSoftKeyboard();
+    }
   }
 
   togglePointerLock() {
@@ -231,63 +304,133 @@ class InputController {
     });
   }
 
+  clearLongPress() {
+    if (this.longPressTimer) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+  }
+
   onTouchStart(e) {
     if (!this.enabled || this.viewOnly || e.touches.length === 0) return;
     e.preventDefault();
 
+    this.clearLongPress();
     this.touchStartTime = performance.now();
+    this.touchMovedDistance = 0;
+    this.longPressTriggered = false;
+    this.maxTouchesInGesture = Math.max(this.maxTouchesInGesture, e.touches.length);
+
     const touch = e.touches[0];
+    this.lastRawTouch = { x: touch.clientX, y: touch.clientY };
     const coords = this.renderer.normalizeCoordinates(touch.clientX, touch.clientY);
     this.lastTouchPos = coords;
 
-    if (coords.inside) {
-      this.send({
-        type: 'mousemove',
-        x: coords.x,
-        y: coords.y,
-      });
-    }
-  }
-
-  onTouchMove(e) {
-    if (!this.enabled || this.viewOnly || !this.lastTouchPos) return;
-    e.preventDefault();
-
     if (e.touches.length === 1) {
-      const touch = e.touches[0];
-      const coords = this.renderer.normalizeCoordinates(touch.clientX, touch.clientY);
-      if (coords.inside) {
+      if (this.touchMode === 'touch' && coords.inside) {
         this.send({
           type: 'mousemove',
           x: coords.x,
           y: coords.y,
         });
       }
-    } else if (e.touches.length === 2) {
-      const touch = e.touches[0];
-      const coords = this.renderer.normalizeCoordinates(touch.clientX, touch.clientY);
-      const dy = (coords.y - this.lastTouchPos.y) * 800;
-      this.send({
-        type: 'wheel',
-        dx: 0,
-        dy: -dy,
-      });
-      this.lastTouchPos = coords;
+
+      // Schedule Long-Press (480ms) for Right-Click with Haptic Vibration
+      this.longPressTimer = setTimeout(() => {
+        if (this.touchMovedDistance < 14 && this.maxTouchesInGesture === 1) {
+          this.longPressTriggered = true;
+          this.vibrate(45);
+          this.send({
+            type: 'click',
+            button: 2,
+            count: 1,
+          });
+        }
+      }, 480);
     }
+  }
+
+  onTouchMove(e) {
+    if (!this.enabled || this.viewOnly || !this.lastRawTouch) return;
+    e.preventDefault();
+
+    const touch = e.touches[0];
+    const rawDx = touch.clientX - this.lastRawTouch.x;
+    const rawDy = touch.clientY - this.lastRawTouch.y;
+    this.touchMovedDistance += Math.hypot(rawDx, rawDy);
+
+    if (this.touchMovedDistance > 14) {
+      this.clearLongPress();
+    }
+
+    if (e.touches.length === 1) {
+      if (this.touchMode === 'trackpad') {
+        // Relative cursor movement like RustDesk Mobile Trackpad mode
+        const sensitivity = 1.65;
+        this.send({
+          type: 'mousemove_rel',
+          dx: Math.round(rawDx * sensitivity),
+          dy: Math.round(rawDy * sensitivity),
+        });
+      } else {
+        const coords = this.renderer.normalizeCoordinates(touch.clientX, touch.clientY);
+        if (coords.inside) {
+          this.send({
+            type: 'mousemove',
+            x: coords.x,
+            y: coords.y,
+          });
+        }
+        this.lastTouchPos = coords;
+      }
+    } else if (e.touches.length === 2) {
+      // Two-finger vertical scroll
+      this.clearLongPress();
+      const scrollDy = rawDy * 3.5;
+      if (Math.abs(scrollDy) > 1) {
+        this.send({
+          type: 'wheel',
+          dx: 0,
+          dy: -Math.round(scrollDy),
+        });
+      }
+    }
+
+    this.lastRawTouch = { x: touch.clientX, y: touch.clientY };
   }
 
   onTouchEnd(e) {
     if (!this.enabled || this.viewOnly) return;
     e.preventDefault();
 
+    this.clearLongPress();
     const duration = performance.now() - this.touchStartTime;
-    if (duration < 250 && this.lastTouchPos && this.lastTouchPos.inside) {
-      this.send({
-        type: 'click',
-        button: 0,
-        count: 1,
-      });
+
+    if (!this.longPressTriggered) {
+      if (this.maxTouchesInGesture === 2 && duration < 300 && this.touchMovedDistance < 24) {
+        // Two-finger tap -> Right Click
+        this.vibrate(30);
+        this.send({
+          type: 'click',
+          button: 2,
+          count: 1,
+        });
+      } else if (this.maxTouchesInGesture === 1 && duration < 280 && this.touchMovedDistance < 16) {
+        // Single-finger tap -> Left Click
+        this.vibrate(15);
+        this.send({
+          type: 'click',
+          button: 0,
+          count: 1,
+        });
+      }
     }
-    this.lastTouchPos = null;
+
+    if (e.touches.length === 0) {
+      this.lastTouchPos = null;
+      this.lastRawTouch = null;
+      this.maxTouchesInGesture = 0;
+    }
   }
 }
+

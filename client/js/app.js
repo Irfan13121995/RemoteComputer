@@ -54,6 +54,8 @@ class RemoteDeskApp {
     this.fetchHostInfo();
     this.fetchDiscoveredPeers();
     this.loadAddressBook();
+    this.updateTouchModeButton();
+    this.checkUrlAutoConnect();
 
     // Poll LAN Discovery peers every 12s while on Hub
     setInterval(() => {
@@ -111,11 +113,18 @@ class RemoteDeskApp {
     // Modals
     this.clipboardModal = document.getElementById('clipboard-modal');
     this.contactModal = document.getElementById('contact-modal');
+    this.androidModal = document.getElementById('android-modal');
   }
 
   bindEvents() {
     // Theme toggle
     document.getElementById('theme-toggle-btn').addEventListener('click', () => this.toggleTheme());
+
+    // Android App & QR Connect Modal
+    const btnAndroidModal = document.getElementById('btn-open-android-modal');
+    if (btnAndroidModal) {
+      btnAndroidModal.addEventListener('click', () => this.openAndroidModal());
+    }
 
     // Copy ID & PIN
     document.getElementById('btn-copy-id').addEventListener('click', () => {
@@ -175,6 +184,25 @@ class RemoteDeskApp {
       e.currentTarget.classList.toggle('active', this.renderer.showRemoteCursor);
       this.showToast(`Remote cursor ${this.renderer.showRemoteCursor ? 'shown' : 'hidden'}`, 'info');
     });
+    const btnTouchMode = document.getElementById('btn-session-touch-mode');
+    if (btnTouchMode) {
+      btnTouchMode.addEventListener('click', () => {
+        const mode = this.input.toggleTouchMode();
+        this.updateTouchModeButton();
+        this.showToast(
+          mode === 'trackpad'
+            ? 'Switched to Virtual Trackpad Mode (relative cursor drag)'
+            : 'Switched to Direct Touch Mode (tap where you touch)',
+          'info'
+        );
+      });
+    }
+    const btnMobileKb = document.getElementById('btn-session-mobile-kb');
+    if (btnMobileKb) {
+      btnMobileKb.addEventListener('click', () => {
+        this.input.openMobileSoftKeyboard();
+      });
+    }
     document.getElementById('btn-session-pointer-lock').addEventListener('click', () => {
       this.input.togglePointerLock();
     });
@@ -1471,6 +1499,69 @@ class RemoteDeskApp {
     }
   }
 
+  // ── ANDROID MOBILE APP, QR PAIRING & TOUCH CONTROLS ─────────────────────────
+  async openAndroidModal() {
+    if (!this.androidModal) return;
+    this.androidModal.classList.remove('hidden');
+
+    try {
+      const res = await fetch('/api/mobile/qr-info');
+      if (res.ok) {
+        const info = await res.json();
+        const qrApkImg = document.getElementById('qr-apk-img');
+        const qrConnectImg = document.getElementById('qr-connect-img');
+        const lanUrlDisplay = document.getElementById('qr-lan-url-display');
+
+        if (qrApkImg && info.apk_url) {
+          qrApkImg.src = `/api/mobile/qr.png?data=${encodeURIComponent(info.apk_url)}&t=${Date.now()}`;
+        }
+        if (qrConnectImg && info.connect_url) {
+          qrConnectImg.src = `/api/mobile/qr.png?data=${encodeURIComponent(info.connect_url)}&t=${Date.now()}`;
+        }
+        if (lanUrlDisplay && info.base_url) {
+          lanUrlDisplay.innerText = `${info.base_url} (ID: ${info.machine_id})`;
+        }
+      }
+    } catch (e) {
+      console.debug('QR info fetch error:', e);
+    }
+  }
+
+  updateTouchModeButton() {
+    const btn = document.getElementById('btn-session-touch-mode');
+    if (!btn || !this.input) return;
+    if (this.input.touchMode === 'trackpad') {
+      btn.innerHTML = '<span>🖱️</span> Trackpad';
+      btn.classList.add('active');
+    } else {
+      btn.innerHTML = '<span>👆</span> Touch';
+      btn.classList.remove('active');
+    }
+  }
+
+  checkUrlAutoConnect() {
+    const params = new URLSearchParams(window.location.search);
+    const autoConnect = params.get('autoconnect');
+    const pin = params.get('pin') || '';
+    const mode = params.get('mode') || 'remote-control';
+    const isMobile = params.get('mobile') === '1' || !!window.AndroidBridge;
+
+    if (isMobile) {
+      document.body.classList.add('mobile-client');
+    }
+
+    if (autoConnect === '1' && pin) {
+      this.partnerPassInput.value = pin;
+      const modeRadio = document.querySelector(`input[name="conn-mode"][value="${mode}"]`);
+      if (modeRadio) modeRadio.checked = true;
+
+      // Clean URL parameters slightly so reload doesn't re-trigger if disconnected
+      setTimeout(() => {
+        this.handleConnect();
+      }, 250);
+    }
+  }
+
   toggleFullscreen() {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
@@ -1481,6 +1572,11 @@ class RemoteDeskApp {
 
   disconnectSession() {
     if (this.ws) this.ws.close();
+    const params = new URLSearchParams(window.location.search);
+    if (window.AndroidBridge && typeof window.AndroidBridge.returnToMobileHub === 'function' && params.get('mobile') === '1') {
+      window.AndroidBridge.returnToMobileHub();
+      return;
+    }
     this.switchToHubView();
     this.showToast('Session ended. Returned to dashboard.', 'info');
   }

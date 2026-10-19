@@ -657,6 +657,93 @@ def create_app(
         return {"success": True, "count": len(saved)}
 
     # ════════════════════════════════════════════════════════════════════════
+    # ANDROID MOBILE APP DOWNLOAD & QR PAIRING
+    # ════════════════════════════════════════════════════════════════════════
+
+    def _find_android_apk() -> Optional[Path]:
+        """Locate RemoteDeskPro-Android.apk in assets/ or dist/ (supports PyInstaller _MEIPASS)."""
+        candidates: List[Path] = []
+        if hasattr(sys, "_MEIPASS"):
+            base = Path(sys._MEIPASS)
+            candidates.append(base / "assets" / "RemoteDeskPro-Android.apk")
+            candidates.append(base / "RemoteDeskPro-Android.apk")
+        root = Path(__file__).resolve().parent.parent
+        candidates.append(root / "dist" / "RemoteDeskPro-Android.apk")
+        candidates.append(root / "assets" / "RemoteDeskPro-Android.apk")
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
+    @app.get("/api/mobile/qr-info")
+    async def get_mobile_qr_info():
+        """Return LAN URLs for downloading the Android APK and instant QR pairing."""
+        ips = get_local_ips()
+        lan_ips = [ip for ip in ips if ip not in ("127.0.0.1", "::1")]
+        primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
+        scheme = "https" if discovery.is_ssl else "http"
+        port = discovery.http_port
+        base_url = f"{scheme}://{primary_ip}:{port}"
+        apk_path = _find_android_apk()
+        pin_val = auth_manager.pin if not auth_manager.is_custom_password else ""
+        connect_url = f"{base_url}/?autoconnect=1&mobile=1&pin={pin_val}"
+        apk_url = f"{base_url}/api/mobile/apk"
+        return {
+            "hostname": platform.node(),
+            "machine_id": auth_manager.get_machine_id(),
+            "primary_ip": primary_ip,
+            "port": port,
+            "base_url": base_url,
+            "apk_url": apk_url,
+            "connect_url": connect_url,
+            "apk_available": apk_path is not None,
+            "apk_size_kb": round(apk_path.stat().st_size / 1024, 1) if apk_path else 0,
+        }
+
+    @app.get("/api/mobile/apk")
+    async def download_android_apk():
+        """Download the signed native Android app (RemoteDeskPro-Android.apk)."""
+        apk_path = _find_android_apk()
+        if not apk_path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="RemoteDeskPro-Android.apk not found on host.",
+            )
+        return FileResponse(
+            path=str(apk_path),
+            filename="RemoteDeskPro-Android.apk",
+            media_type="application/vnd.android.package-archive",
+        )
+
+    @app.get("/api/mobile/qr.png")
+    async def generate_mobile_qr(data: str = Query(..., description="URL or payload to encode in QR code")):
+        """Generate a high-contrast PNG QR code image for Android phone scanning."""
+        import io
+        try:
+            import qrcode
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=8,
+                border=2,
+            )
+            qr.add_data(data)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="#0A162E", back_color="#FFFFFF")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return Response(content=buf.getvalue(), media_type="image/png")
+        except Exception:
+            from PIL import Image, ImageDraw
+            img = Image.new("RGB", (240, 240), (255, 255, 255))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([(10, 10), (230, 230)], outline=(10, 22, 46), width=4)
+            draw.text((24, 105), data[:28], fill=(10, 22, 46))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return Response(content=buf.getvalue(), media_type="image/png")
+
+    # ════════════════════════════════════════════════════════════════════════
     # WEBSOCKET STREAMING & INTERACTIVE TERMINAL
     # ════════════════════════════════════════════════════════════════════════
 

@@ -205,3 +205,22 @@ def test_rustdesk_api_endpoints_and_folder_zip(tmp_path):
     audit_res = client.get("/api/security/audit-log", headers=headers)
     assert audit_res.status_code == 200
     assert len(audit_res.json()["events"]) >= 1
+
+    # 5. Android Mobile App APK Download & QR Code Endpoints
+    qr_info_res = client.get("/api/mobile/qr-info")
+    assert qr_info_res.status_code == 200
+    qr_info = qr_info_res.json()
+    assert "apk_url" in qr_info
+    assert "connect_url" in qr_info
+    assert qr_info["apk_available"] is True
+
+    qr_png_res = client.get("/api/mobile/qr.png?data=http://192.168.1.50:8000")
+    assert qr_png_res.status_code == 200
+    assert qr_png_res.headers["content-type"] == "image/png"
+    assert qr_png_res.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    apk_res = client.get("/api/mobile/apk")
+    assert apk_res.status_code == 200
+    assert apk_res.headers["content-type"] == "application/vnd.android.package-archive"
+    assert apk_res.content[:2] == b"PK"
+

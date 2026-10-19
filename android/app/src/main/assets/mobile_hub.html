@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>RemoteDesk Pro — Android Client</title>
+  <style>
+    :root {
+      --bg: #0A0E17;
+      --card: rgba(22, 32, 54, 0.82);
+      --border: rgba(255, 255, 255, 0.14);
+      --accent: #00D4FF;
+      --accent-blue: #2563EB;
+      --text: #F8FAFC;
+      --muted: #94A3B8;
+      --green: #10B981;
+      --red: #EF4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      background-image:
+        radial-gradient(circle at 15% 10%, rgba(0, 212, 255, 0.18) 0%, transparent 45%),
+        radial-gradient(circle at 85% 90%, rgba(37, 99, 235, 0.18) 0%, transparent 45%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 18px 16px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 4px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 6px 20px rgba(0, 212, 255, 0.35);
+    }
+    .title { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+    .subtitle { font-size: 11px; color: var(--muted); }
+    .badge {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 10px;
+      border-radius: 999px;
+    }
+    .card {
+      background: var(--card);
+      border: 1.5px solid var(--border);
+      border-radius: 22px;
+      padding: 20px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .card-title { font-size: 16px; font-weight: 800; }
+    .card-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 5px;
+      display: block;
+    }
+    .input {
+      width: 100%;
+      background: rgba(10, 14, 23, 0.75);
+      border: 1.5px solid var(--border);
+      border-radius: 14px;
+      padding: 13px 14px;
+      color: var(--text);
+      font-size: 15px;
+      font-family: monospace;
+      outline: none;
+    }
+    .input:focus { border-color: var(--accent); }
+    .mode-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .mode-opt {
+      background: rgba(10, 14, 23, 0.65);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 11px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .btn-primary {
+      width: 100%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-blue));
+      color: #fff;
+      font-weight: 800;
+      font-size: 15px;
+      border: none;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 8px 24px rgba(0, 166, 255, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .peer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .peer-item {
+      background: rgba(10, 14, 23, 0.65);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .peer-name { font-weight: 700; font-size: 14px; }
+    .peer-meta { font-family: monospace; font-size: 12px; color: var(--accent); margin-top: 2px; }
+    .err { color: var(--red); font-size: 12px; font-weight: 600; min-height: 16px; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="brand">
+      <div class="logo">🖥️</div>
+      <div>
+        <div class="title">RemoteDesk Pro</div>
+        <div class="subtitle">Android Remote Control v2.0</div>
+      </div>
+    </div>
+    <span class="badge">● Wi-Fi Ready</span>
+  </div>
+
+  <!-- Connect Card -->
+  <div class="card">
+    <div>
+      <div class="card-title">Connect to Computer</div>
+      <div class="card-sub">Enter your computer's LAN IP:Port (or tap a discovered PC below) and 6-digit PIN.</div>
+    </div>
+
+    <div>
+      <label class="label">Computer IP:Port or Address</label>
+      <input id="host-input" class="input" type="text" placeholder="e.g. 192.168.1.50:8000" autocomplete="off" />
+    </div>
+
+    <div>
+      <label class="label">One-Time PIN or Permanent Password</label>
+      <input id="pin-input" class="input" type="password" placeholder="Enter 6-digit PIN or Password" />
+    </div>
+
+    <div>
+      <label class="label">Touch Session Mode</label>
+      <div class="mode-grid">
+        <label class="mode-opt">
+          <input type="radio" name="mode" value="remote-control" checked />
+          <span>👆 Full Control</span>
+        </label>
+        <label class="mode-opt">
+          <input type="radio" name="mode" value="view-only" />
+          <span>👁️ View Only</span>
+        </label>
+      </div>
+    </div>
+
+    <div id="err-box" class="err"></div>
+
+    <button id="btn-connect" class="btn-primary">
+      <span>🚀</span> Connect to Computer
+    </button>
+  </div>
+
+  <!-- Auto-Discovered Computers on Wi-Fi -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div class="card-title">📡 Discovered PCs on Wi-Fi</div>
+        <div class="card-sub">UDP 21116 &amp; Local Subnet Auto-Discovery</div>
+      </div>
+      <button id="btn-scan" class="btn-secondary">🔄 Scan</button>
+    </div>
+    <div id="peers-container" class="peer-list">
+      <div style="color:var(--muted);font-size:12px;padding:8px 0;">Scanning Wi-Fi network for RemoteDesk Pro hosts...</div>
+    </div>
+  </div>
+
+  <!-- Saved Computers -->
+  <div class="card">
+    <div>
+      <div class="card-title">📖 Recent Computers</div>
+      <div class="card-sub">Tap to quick-fill connection details</div>
+    </div>
+    <div id="saved-container" class="peer-list"></div>
+  </div>
+
+  <script>
+    const hostInput = document.getElementById('host-input');
+    const pinInput = document.getElementById('pin-input');
+    const errBox = document.getElementById('err-box');
+    const peersContainer = document.getElementById('peers-container');
+    const savedContainer = document.getElementById('saved-container');
+
+    function loadSaved() {
+      if (window.AndroidBridge) {
+        const last = window.AndroidBridge.getLastHost();
+        if (last && !hostInput.value) hostInput.value = last;
+        try {
+          const list = JSON.parse(window.AndroidBridge.getSavedHosts() || '[]');
+          renderSaved(list);
+        } catch (e) {}
+      }
+    }
+
+    function renderSaved(list) {
+      savedContainer.innerHTML = '';
+      if (!list || list.length === 0) {
+        savedContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;">No recent connections yet.</div>';
+        return;
+      }
+      list.forEach((item) => {
+        const div = document.createElement('div');
+        div.className = 'peer-item';
+        div.innerHTML = `
+          <div>
+            <div class="peer-name">🖥️ ${item.name || item.host}</div>
+            <div class="peer-meta">${item.host}</div>
+          </div>
+          <button class="btn-secondary">Select</button>
+        `;
+        div.onclick = () => {
+          hostInput.value = item.host;
+          if (item.pin) pinInput.value = item.pin;
+          pinInput.focus();
+        };
+        savedContainer.appendChild(div);
+      });
+    }
+
+    window.onAndroidPeersDiscovered = function(peers) {
+      peersContainer.innerHTML = '';
+      if (!peers || peers.length === 0) {
+        peersContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;">No hosts found automatically. Enter your PC LAN IP:8000 above.</div>';
+        return;
+      }
+      peers.forEach((p) => {
+        const div = document.createElement('div');
+        div.className = 'peer-item';
+        div.innerHTML = `
+          <div>
+            <div class="peer-name">🟢 ${p.hostname || 'Remote-PC'} (${p.os || 'Windows'})</div>
+            <div class="peer-meta">ID: ${p.machine_id} • ${p.host_addr}</div>
+          </div>
+          <button class="btn-secondary" style="border-color:var(--accent);color:var(--accent);">Tap</button>
+        `;
+        div.onclick = () => {
+          hostInput.value = p.host_addr;
+          pinInput.focus();
+          if (window.AndroidBridge) window.AndroidBridge.vibrate(20);
+        };
+        peersContainer.appendChild(div);
+      });
+    };
+
+    document.getElementById('btn-scan').onclick = () => {
+      peersContainer.innerHTML = '<div style="color:var(--accent);font-size:12px;">Scanning Wi-Fi subnet & UDP 21116...</div>';
+      if (window.AndroidBridge) window.AndroidBridge.startLanScan();
+    };
+
+    document.getElementById('btn-connect').onclick = () => {
+      const host = hostInput.value.trim();
+      const pin = pinInput.value.trim();
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+
+      if (!host) {
+        errBox.innerText = 'Please enter your computer IP:Port (e.g. 192.168.1.50:8000) or tap a discovered PC.';
+        return;
+      }
+      if (!pin) {
+        errBox.innerText = 'Please enter the 6-digit PIN or Permanent Password.';
+        return;
+      }
+
+      if (window.AndroidBridge) {
+        try {
+          const list = JSON.parse(window.AndroidBridge.getSavedHosts() || '[]').filter(x => x.host !== host);
+          list.unshift({ host, pin, name: host });
+          window.AndroidBridge.saveHostsJson(JSON.stringify(list.slice(0, 6)));
+        } catch (e) {}
+        window.AndroidBridge.connectToHost(host, pin, mode);
+      }
+    };
+
+    loadSaved();
+    if (window.AndroidBridge) {
+      window.AndroidBridge.startLanScan();
+    }
+  </script>
+</body>
+</html>

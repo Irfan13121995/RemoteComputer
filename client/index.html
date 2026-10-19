@@ -56,6 +56,9 @@
 
         <!-- Header Actions -->
         <div class="header-actions">
+          <button id="btn-open-android-modal" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; font-weight: 700; border-color: var(--accent); color: var(--accent);" title="Download Android App &amp; Scan QR Code">
+            <span>📱</span> Android App
+          </button>
           <button id="theme-toggle-btn" class="icon-action-btn" title="Toggle Light/Dark Theme">
             <span id="theme-icon">🌙</span>
           </button>
@@ -641,6 +644,14 @@
           <span>🖱️</span>
         </button>
 
+        <button id="btn-session-touch-mode" class="tb-btn" title="Switch Mobile Touch vs Virtual Trackpad Mode">
+          <span>👆</span> Touch
+        </button>
+
+        <button id="btn-session-mobile-kb" class="tb-btn" title="Open Android Phone Soft Keyboard">
+          <span>📱</span> Keybd
+        </button>
+
         <button id="btn-session-pointer-lock" class="tb-btn" title="Lock Mouse Cursor (L)">
           <span>🔒</span> Lock Mouse
         </button>
@@ -657,7 +668,7 @@
           <span>⏺️</span> Rec
         </button>
 
-        <button id="btn-session-vk" class="tb-btn" title="Toggle On-Screen Keyboard">
+        <button id="btn-session-vk" class="tb-btn" title="Toggle On-Screen Function Keys">
           <span>⌨</span>
         </button>
 
@@ -827,6 +838,52 @@
       </form>
     </div>
   </div>
+
+  <!-- Modal: Android App & QR Pairing -->
+  <div id="android-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width: 640px;">
+      <div class="modal-header">
+        <h2><span>📱</span> RemoteDesk Pro for Android — App &amp; QR Connect</h2>
+        <button class="modal-close">&times;</button>
+      </div>
+      <p style="font-size: 13px; color: var(--text-secondary);">
+        Access and control this computer from your Android phone over Wi-Fi or Tailscale/VPN with native touch/trackpad gestures, haptic feedback, and soft keyboard support.
+      </p>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 8px;">
+        <!-- Card 1: Download Native Android APK -->
+        <div class="credential-box" style="align-items: center; text-align: center; padding: 16px;">
+          <div style="font-weight: 800; font-size: 14px; color: var(--accent);">1. Install Android App (.APK)</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">Scan with your phone camera to download &amp; install the signed Android APK</div>
+          <div style="background: #ffffff; padding: 10px; border-radius: 12px; display: inline-block; margin: 6px 0;">
+            <img id="qr-apk-img" src="" alt="Android APK QR Code" style="width: 165px; height: 165px; display: block;" />
+          </div>
+          <a id="btn-download-apk" href="/api/mobile/apk" download="RemoteDeskPro-Android.apk" class="btn-primary" style="text-decoration: none; padding: 9px 14px; font-size: 12px;">
+            <span>📥</span> Download RemoteDeskPro-Android.apk
+          </a>
+        </div>
+
+        <!-- Card 2: Instant QR Auto-Connect -->
+        <div class="credential-box" style="align-items: center; text-align: center; padding: 16px;">
+          <div style="font-weight: 800; font-size: 14px; color: var(--green);">2. Instant QR Auto-Connect</div>
+          <div style="font-size: 11px; color: var(--text-secondary);">Scan to immediately launch &amp; authenticate with your current One-Time PIN</div>
+          <div style="background: #ffffff; padding: 10px; border-radius: 12px; display: inline-block; margin: 6px 0;">
+            <img id="qr-connect-img" src="" alt="Instant Connect QR Code" style="width: 165px; height: 165px; display: block;" />
+          </div>
+          <div id="qr-lan-url-display" class="font-mono" style="font-size: 11px; color: var(--text-primary); word-break: break-all; padding: 6px 8px; background: var(--bg-surface); border-radius: 6px; width: 100%;">
+            http://192.168.1.x:8000
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 4px;">
+        <span>💡 <strong>Touch Gestures:</strong> 1-Finger Tap = Left Click • Long-Press / 2-Finger Tap = Right Click • 2-Finger Drag = Scroll</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden Input for Native Android Soft Keyboard (IME) -->
+  <input id="mobile-ime-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none;" />
 
   <!-- Toast Notification Container -->
   <div id="toast-container"></div>
