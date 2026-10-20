@@ -37,6 +37,7 @@ from core.config_store import ConfigStore
 from core.discovery import LanDiscoveryService
 from core.file_manager import FileManager
 from core.input_handler import InputHandler
+from core.internet_tunnel import InternetTunnelManager
 from core.privacy_mode import PrivacyModeManager
 from core.rendezvous import RendezvousBroker, RendezvousClientMediator
 from core.screen import ScreenCapture
@@ -44,7 +45,7 @@ from core.system_diagnostics import SystemDiagnostics
 from core.tcp_tunnel import TcpTunnelManager
 from core.tls import generate_self_signed_cert, get_local_ips
 from core.tray_agent import SystemTrayAgent
-from core.windows_integration import launch_native_app_window
+from core.windows_integration import ensure_firewall_rules, launch_native_app_window
 from server.app import create_app
 
 
@@ -118,6 +119,10 @@ def main():
     rendezvous_broker = RendezvousBroker()
 
     machine_id = auth_manager.get_machine_id()
+
+    # Ensure Windows Firewall rules in background so LAN connections aren't blocked
+    threading.Thread(target=ensure_firewall_rules, args=(args.port, 21116), daemon=True).start()
+
     discovery_service = LanDiscoveryService(
         machine_id=machine_id,
         http_port=args.port,
@@ -127,6 +132,9 @@ def main():
     discovery_service.enabled = bool(net_cfg.get("lan_discovery", True))
     discovery_service.start()
 
+    # Start zero-config Public Internet HTTPS/WSS Tunnel for Mobile Data / Cross-Network access
+    internet_tunnel = InternetTunnelManager(local_port=args.port)
+
     rv_mediator = RendezvousClientMediator(
         local_broker=rendezvous_broker,
         machine_id=machine_id,
@@ -134,7 +142,13 @@ def main():
         is_ssl=args.ssl,
         rendezvous_url=net_cfg.get("rendezvous_server", ""),
         relay_key=net_cfg.get("relay_key", ""),
+        public_url_getter=lambda: internet_tunnel.public_url,
     )
+    internet_tunnel.on_url_change = lambda pub_url: (
+        print(f"  * Global Internet  : {pub_url} (4G/5G Mobile Data & Cross-Network Ready)"),
+        rv_mediator.trigger_publish_now(),
+    )
+    internet_tunnel.start()
     rv_mediator.start()
 
     # Setup TLS if enabled
@@ -160,6 +174,7 @@ def main():
         privacy_manager=privacy_manager,
         audio_service=audio_service,
         tunnel_manager=tunnel_manager,
+        internet_tunnel=internet_tunnel,
         default_fps=args.fps,
     )
 

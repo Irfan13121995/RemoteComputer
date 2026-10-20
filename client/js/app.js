@@ -137,6 +137,19 @@ class RemoteDeskApp {
     });
     document.getElementById('btn-regenerate-pin').addEventListener('click', () => this.regeneratePin());
 
+    const btnCopyPublicUrl = document.getElementById('btn-copy-public-url');
+    if (btnCopyPublicUrl) {
+      btnCopyPublicUrl.addEventListener('click', () => {
+        const pubBadge = document.getElementById('host-public-url-badge');
+        const url = pubBadge ? pubBadge.getAttribute('data-url') || pubBadge.innerText.trim() : '';
+        if (url && url.startsWith('http')) {
+          navigator.clipboard.writeText(url).then(() => this.showToast('Public Internet URL copied', 'success'));
+        } else {
+          this.showToast('Public tunnel URL is still provisioning...', 'info');
+        }
+      });
+    }
+
     // Permanent Password Configuration
     const btnSetPermPwd = document.getElementById('btn-set-perm-pwd');
     if (btnSetPermPwd) {
@@ -263,6 +276,20 @@ class RemoteDeskApp {
     document.getElementById('btn-session-disconnect').addEventListener('click', () => {
       this.disconnectSession();
     });
+
+    const sessionToolbar = document.getElementById('session-toolbar');
+    const btnToolbarCollapse = document.getElementById('btn-toolbar-collapse');
+    const btnToolbarExpand = document.getElementById('btn-toolbar-expand');
+    if (btnToolbarCollapse && sessionToolbar && btnToolbarExpand) {
+      btnToolbarCollapse.addEventListener('click', () => {
+        sessionToolbar.classList.add('collapsed');
+        btnToolbarExpand.classList.remove('hidden');
+      });
+      btnToolbarExpand.addEventListener('click', () => {
+        sessionToolbar.classList.remove('collapsed');
+        btnToolbarExpand.classList.add('hidden');
+      });
+    }
 
     // Macro Actions dropdown
     document.getElementById('btn-session-actions').addEventListener('click', (e) => {
@@ -423,12 +450,16 @@ class RemoteDeskApp {
           bannerHost.innerText = `${data.hostname || 'This Computer'} (${data.machine_id || ''})`;
         }
 
-        // Pre-populate Partner ID and PIN on remote devices so 1-click connection works immediately
-        if (this.partnerIdInput && !this.partnerIdInput.value) {
-          this.partnerIdInput.value = data.machine_id || '';
-        }
-        if (this.partnerPassInput && !this.partnerPassInput.value && data.pin && data.pin !== '••••••') {
-          this.partnerPassInput.value = data.pin;
+        // Pre-populate Partner ID and PIN ONLY when opened from a remote device (e.g. Android phone or remote browser)
+        // On the local Windows host (localhost / 127.0.0.1), keep Partner ID & PIN fields clear so the user can enter a remote PC's ID
+        const isLocalHostPage = ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+        if (!isLocalHostPage) {
+          if (this.partnerIdInput && !this.partnerIdInput.value) {
+            this.partnerIdInput.value = data.machine_id || '';
+          }
+          if (this.partnerPassInput && !this.partnerPassInput.value && data.pin && data.pin !== '••••••') {
+            this.partnerPassInput.value = data.pin;
+          }
         }
 
         if (data.monitor_rect) {
@@ -436,10 +467,31 @@ class RemoteDeskApp {
           this.hostDisplayInfo.innerText = `${m.width}x${m.height} (Display ${data.active_monitor})`;
         }
 
+        const pubBadge = document.getElementById('host-public-url-badge');
+        if (pubBadge) {
+          if (data.public_url) {
+            pubBadge.innerText = data.public_url.replace(/^https?:\/\//, '');
+            pubBadge.setAttribute('data-url', data.public_url);
+            pubBadge.title = data.public_url;
+            pubBadge.style.color = 'var(--green)';
+          } else {
+            pubBadge.innerText = 'Connecting tunnel...';
+            if (!this._tunnelRetryScheduled) {
+              this._tunnelRetryScheduled = true;
+              setTimeout(() => {
+                this._tunnelRetryScheduled = false;
+                this.fetchHostInfo();
+              }, 3000);
+            }
+          }
+        }
+
         if (data.local_ips && data.local_ips.length > 0) {
           const lanIps = data.local_ips.filter((ip) => ip !== '127.0.0.1' && ip !== '::1');
-          if (lanIps.length > 0) {
-            this.hubIpList.innerText = `LAN: ${lanIps.join(', ')}:${window.location.port || 8000}`;
+          const lanStr = lanIps.length > 0 ? `LAN: ${lanIps.join(', ')}:${window.location.port || 8000}` : '';
+          const pubStr = data.public_url ? ` • Global: ${data.public_url}` : '';
+          if (lanStr || pubStr) {
+            this.hubIpList.innerText = `${lanStr}${pubStr}`;
           }
         }
 
@@ -618,7 +670,16 @@ class RemoteDeskApp {
     let password = this.partnerPassInput.value.trim();
     const hostPin = this.hostPinDisplay ? this.hostPinDisplay.innerText.trim() : '';
 
-    if (!password && hostPin && hostPin !== '••••••') {
+    const selfIdDigits = (this.hostMachineId.innerText || '').replace(/\D/g, '');
+    const targetIdDigits = partnerId.replace(/\D/g, '');
+    const isTargetingSelfHost =
+      !partnerId ||
+      partnerId === 'this-host' ||
+      partnerId.toLowerCase().startsWith('localhost') ||
+      partnerId.startsWith('127.0.0.1') ||
+      (selfIdDigits && targetIdDigits === selfIdDigits && !partnerId.includes('.'));
+
+    if (isTargetingSelfHost && !password && hostPin && hostPin !== '••••••') {
       password = hostPin;
       this.partnerPassInput.value = hostPin;
     }
@@ -634,47 +695,45 @@ class RemoteDeskApp {
 
     try {
       let targetBaseUrl = window.location.origin;
-      const selfIdDigits = (this.hostMachineId.innerText || '').replace(/\D/g, '');
-      const targetIdDigits = partnerId.replace(/\D/g, '');
-      const isTargetingSelfHost =
-        !partnerId ||
-        partnerId === 'this-host' ||
-        partnerId.toLowerCase().startsWith('localhost') ||
-        partnerId.startsWith('127.0.0.1') ||
-        (selfIdDigits && targetIdDigits === selfIdDigits);
 
       if (isTargetingSelfHost) {
         // Always use window.location.origin when connecting to the host serving this page!
         targetBaseUrl = window.location.origin;
+      } else if (partnerId.startsWith('http://') || partnerId.startsWith('https://')) {
+        targetBaseUrl = partnerId.replace(/\/+$/, '');
       } else if (partnerId.includes(':') || partnerId.includes('.')) {
-        // Direct IP:Port or URL to a different computer
-        if (!partnerId.startsWith('http://') && !partnerId.startsWith('https://')) {
-          targetBaseUrl = `${window.location.protocol}//${partnerId}`;
+        // Direct IP:Port, IPv4 address, or tunnel hostname (e.g. abc.lhr.life or 192.168.1.50)
+        const isIpv4Only = /^\d{1,3}(\.\d{1,3}){3}$/.test(partnerId);
+        const isTunnelDomain = partnerId.endsWith('.lhr.life') || partnerId.endsWith('.trycloudflare.com');
+        if (isTunnelDomain) {
+          targetBaseUrl = `https://${partnerId.replace(/\/+$/, '')}`;
+        } else if (isIpv4Only) {
+          targetBaseUrl = `http://${partnerId}:8000`;
         } else {
-          targetBaseUrl = partnerId;
+          targetBaseUrl = `http://${partnerId.replace(/\/+$/, '')}`;
         }
       } else if (partnerId) {
-        // 9-digit RustDesk-style Partner ID -> Resolve via LAN Discovery & Rendezvous Server
-        try {
-          const resLookup = await fetch(`/api/discovery/resolve?partner_id=${encodeURIComponent(partnerId)}`);
-          if (resLookup.ok) {
-            const lookupData = await resLookup.json();
-            if (lookupData.is_self) {
-              targetBaseUrl = window.location.origin;
-            } else if (lookupData.found && lookupData.url) {
-              // Never redirect a remote client to 127.0.0.1 / localhost
-              if (
-                (lookupData.url.includes('127.0.0.1') || lookupData.url.includes('localhost')) &&
-                !['127.0.0.1', 'localhost'].includes(window.location.hostname)
-              ) {
-                targetBaseUrl = window.location.origin;
-              } else {
-                targetBaseUrl = lookupData.url;
-              }
-            }
+        // 9-digit RustDesk-style Partner ID -> Resolve via LAN Discovery & Global Cloud Rendezvous
+        const resLookup = await fetch(`/api/discovery/resolve?partner_id=${encodeURIComponent(partnerId)}`);
+        if (!resLookup.ok) {
+          throw new Error(`Partner ID resolution failed (HTTP ${resLookup.status}).`);
+        }
+        const lookupData = await resLookup.json();
+        if (lookupData.is_self) {
+          targetBaseUrl = window.location.origin;
+        } else if (lookupData.found && lookupData.url) {
+          if (
+            (lookupData.url.includes('127.0.0.1') || lookupData.url.includes('localhost')) &&
+            !['127.0.0.1', 'localhost'].includes(window.location.hostname)
+          ) {
+            targetBaseUrl = window.location.origin;
+          } else {
+            targetBaseUrl = lookupData.url.replace(/\/+$/, '');
           }
-        } catch (e) {
-          console.debug('Partner ID lookup fallback to origin:', e);
+        } else {
+          throw new Error(
+            `Could not find Partner ID "${partnerId}" on LAN or Global Rendezvous. Verify RemoteDesk Pro is running on the remote PC, or enter its IP:8000 / Public Tunnel URL.`
+          );
         }
       }
 

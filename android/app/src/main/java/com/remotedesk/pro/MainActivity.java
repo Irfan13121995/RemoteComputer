@@ -102,25 +102,31 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> webView.loadUrl(HUB_ASSET_URL));
     }
 
-    private void connectToHostInternal(String hostAddr, String pin, String mode) {
-        inRemoteSession = true;
-        String cleanHost = hostAddr.trim();
-        if (!cleanHost.startsWith("http://") && !cleanHost.startsWith("https://")) {
-            cleanHost = "http://" + cleanHost;
-        }
-        if (cleanHost.endsWith("/")) {
-            cleanHost = cleanHost.substring(0, cleanHost.length() - 1);
-        }
+    private void connectToHostInternal(final String hostAddr, final String pin, final String mode) {
+        new Thread(() -> {
+            String resolvedBaseUrl = LanDiscoveryScanner.resolveBestHostUrl(MainActivity.this, hostAddr);
+            if (resolvedBaseUrl == null || resolvedBaseUrl.isEmpty()) {
+                runOnUiThread(() -> {
+                    inRemoteSession = false;
+                    webView.evaluateJavascript(
+                        "if(window.onAndroidConnectError){window.onAndroidConnectError('Could not locate Partner ID on Wi-Fi or Global Rendezvous. Verify RemoteDesk Pro is running on your PC.');}",
+                        null
+                    );
+                });
+                return;
+            }
 
-        // Persist last used host
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        prefs.edit().putString(KEY_LAST_HOST, hostAddr.trim()).apply();
+            inRemoteSession = true;
+            // Persist last used host (keep the Partner ID or address the user entered)
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putString(KEY_LAST_HOST, hostAddr.trim()).apply();
 
-        final String targetUrl = cleanHost
-            + "/?autoconnect=1&mobile=1&show_desktop=1&pin=" + Uri.encode(pin != null ? pin.trim() : "")
-            + "&mode=" + Uri.encode(mode != null ? mode : "remote-control");
+            final String targetUrl = resolvedBaseUrl
+                + "/?autoconnect=1&mobile=1&show_desktop=1&pin=" + Uri.encode(pin != null ? pin.trim() : "")
+                + "&mode=" + Uri.encode(mode != null ? mode : "remote-control");
 
-        runOnUiThread(() -> webView.loadUrl(targetUrl));
+            runOnUiThread(() -> webView.loadUrl(targetUrl));
+        }).start();
     }
 
     @Override

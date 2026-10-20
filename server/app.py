@@ -20,6 +20,7 @@ from core.config_store import ConfigStore
 from core.discovery import LanDiscoveryService
 from core.file_manager import FileManager
 from core.input_handler import InputHandler
+from core.internet_tunnel import InternetTunnelManager
 from core.privacy_mode import PrivacyModeManager
 from core.rendezvous import RendezvousBroker, RendezvousClientMediator
 from core.screen import ScreenCapture
@@ -104,6 +105,7 @@ class RendezvousRegisterRequest(BaseModel):
     port: int = 8000
     ssl: bool = False
     relay_key: Optional[str] = ""
+    public_url: Optional[str] = ""
 
 
 class PrivacyToggleRequest(BaseModel):
@@ -135,6 +137,7 @@ def create_app(
     privacy_manager: Optional[PrivacyModeManager] = None,
     audio_service: Optional[AudioService] = None,
     tunnel_manager: Optional[TcpTunnelManager] = None,
+    internet_tunnel: Optional[InternetTunnelManager] = None,
     default_fps: int = 30,
 ) -> FastAPI:
     """Create and configure FastAPI application instance with full RustDesk feature suite."""
@@ -199,9 +202,10 @@ def create_app(
 
     @app.get("/api/host-info")
     async def get_host_info():
-        """Public host information (Machine ID, LAN IPs, OS, monitors, permissions, privacy status)."""
+        """Public host information (Machine ID, LAN IPs, Public Tunnel URL, OS, monitors, permissions, privacy status)."""
         monitors = screen.get_monitors()
         active_rect = screen.get_current_monitor_rect()
+        pub_url = internet_tunnel.public_url if internet_tunnel else ""
         return {
             "machine_id": auth_manager.get_machine_id(),
             "pin": auth_manager.pin if not auth_manager.is_custom_password else "••••••",
@@ -210,10 +214,14 @@ def create_app(
             "hostname": platform.node(),
             "os": platform.system(),
             "os_release": platform.release(),
+            "port": discovery.http_port,
+            "ssl": discovery.is_ssl,
             "monitors": monitors,
             "active_monitor": screen.monitor_index,
             "monitor_rect": active_rect,
             "local_ips": get_local_ips(),
+            "public_url": pub_url,
+            "internet_tunnel": internet_tunnel.get_status() if internet_tunnel else {"status": "disabled", "public_url": ""},
             "permissions": cfg.get_permissions(),
             "privacy_mode": privacy.get_status(),
             "windows_integration": get_windows_integration_status(),
@@ -286,11 +294,11 @@ def create_app(
     async def resolve_partner_id(partner_id: str = Query(...)):
         """
         Resolve a 9-digit Partner ID (e.g. '360 523 800') via:
-        1. Local LAN UDP Discovery Table
-        2. Built-in Rendezvous (hbbs) Registry
+        1. Local LAN UDP Discovery Table + Concurrent /24 HTTP Subnet Sweep
+        2. Built-in Rendezvous (hbbs) Registry + Global Cloud Rendezvous (Cross-Network Tunnel)
         """
         is_self = discovery.normalize_id(partner_id) == discovery.normalize_id(auth_manager.get_machine_id())
-        # 1. Check LAN Discovery
+        # 1. Check LAN Discovery (UDP cache + fast /24 HTTP subnet sweep)
         lan_url = discovery.resolve_partner_id(partner_id)
         if lan_url:
             return {
@@ -301,16 +309,16 @@ def create_app(
                 "partner_id": partner_id,
             }
 
-        # 2. Check Rendezvous Broker
-        rv_entry = rv_broker.lookup_host(partner_id)
-        if rv_entry and rv_entry.get("direct_url"):
+        # 2. Check Rendezvous Broker (Local + Global Cloud Rendezvous with LAN vs. Public Tunnel probe)
+        resolved = rv_broker.resolve_best_url(partner_id)
+        if resolved and resolved.get("url"):
             return {
                 "found": True,
                 "is_self": is_self,
-                "source": "rendezvous_server",
-                "url": rv_entry["direct_url"],
+                "source": resolved.get("source", "rendezvous_server"),
+                "url": resolved["url"],
                 "partner_id": partner_id,
-                "host": rv_entry,
+                "host": resolved.get("record"),
             }
 
         return {"found": False, "is_self": is_self, "partner_id": partner_id, "url": None}
@@ -328,6 +336,7 @@ def create_app(
             is_ssl=req.ssl,
             relay_key=req.relay_key or "",
             public_ip=client_ip,
+            public_url=req.public_url or "",
         )
         return {"success": True, "registration": record}
 
@@ -685,25 +694,33 @@ def create_app(
 
     @app.get("/api/mobile/qr-info")
     async def get_mobile_qr_info():
-        """Return LAN URLs for downloading the Android APK and instant QR pairing."""
+        """Return LAN & Public Internet Tunnel URLs for downloading the Android APK and instant QR pairing."""
         ips = get_local_ips()
         lan_ips = [ip for ip in ips if ip not in ("127.0.0.1", "::1")]
         primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
         scheme = "https" if discovery.is_ssl else "http"
         port = discovery.http_port
-        base_url = f"{scheme}://{primary_ip}:{port}"
+        lan_base_url = f"{scheme}://{primary_ip}:{port}"
+        pub_url = (internet_tunnel.public_url.rstrip("/") if (internet_tunnel and internet_tunnel.public_url) else "")
+        preferred_base = pub_url if pub_url else lan_base_url
         apk_path = _find_android_apk()
         pin_val = auth_manager.pin if not auth_manager.is_custom_password else ""
-        connect_url = f"{base_url}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
-        apk_url = f"{base_url}/api/mobile/apk"
+        connect_url = f"{preferred_base}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
+        lan_connect_url = f"{lan_base_url}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
+        apk_url = f"{preferred_base}/api/mobile/apk"
+        lan_apk_url = f"{lan_base_url}/api/mobile/apk"
         return {
             "hostname": platform.node(),
             "machine_id": auth_manager.get_machine_id(),
             "primary_ip": primary_ip,
             "port": port,
-            "base_url": base_url,
+            "base_url": preferred_base,
+            "lan_base_url": lan_base_url,
+            "public_url": pub_url,
             "apk_url": apk_url,
+            "lan_apk_url": lan_apk_url,
             "connect_url": connect_url,
+            "lan_connect_url": lan_connect_url,
             "apk_available": apk_path is not None,
             "apk_size_kb": round(apk_path.stat().st_size / 1024, 1) if apk_path else 0,
         }

@@ -165,19 +165,19 @@
         <div class="subtitle">Android Remote Control v2.0</div>
       </div>
     </div>
-    <span class="badge">● Wi-Fi Ready</span>
+    <span class="badge">● Wi-Fi &amp; 4G/5G Ready</span>
   </div>
 
   <!-- Connect Card -->
   <div class="card">
     <div>
       <div class="card-title">Connect to Computer</div>
-      <div class="card-sub">Enter your computer's LAN IP:Port (or tap a discovered PC below) and 6-digit PIN.</div>
+      <div class="card-sub">Enter your computer's 9-digit Partner ID (works over Wi-Fi &amp; 4G/5G Mobile Data), Public Tunnel URL, or LAN IP:Port.</div>
     </div>
 
     <div>
-      <label class="label">Computer IP:Port or Address</label>
-      <input id="host-input" class="input" type="text" placeholder="e.g. 192.168.1.50:8000" autocomplete="off" />
+      <label class="label">9-Digit Partner ID, Tunnel URL, or LAN IP:Port</label>
+      <input id="host-input" class="input" type="text" placeholder="e.g. 349 443 493 or 192.168.1.50:8000" autocomplete="off" />
     </div>
 
     <div>
@@ -206,17 +206,17 @@
     </button>
   </div>
 
-  <!-- Auto-Discovered Computers on Wi-Fi -->
+  <!-- Auto-Discovered Computers on Wi-Fi & Global Rendezvous -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <div>
-        <div class="card-title">📡 Discovered PCs on Wi-Fi</div>
-        <div class="card-sub">UDP 21116 &amp; Local Subnet Auto-Discovery</div>
+        <div class="card-title">📡 Online Computers (Wi-Fi &amp; Global)</div>
+        <div class="card-sub">UDP 21116, Subnet Scan &amp; Global Cloud Rendezvous</div>
       </div>
       <button id="btn-scan" class="btn-secondary">🔄 Scan</button>
     </div>
     <div id="peers-container" class="peer-list">
-      <div style="color:var(--muted);font-size:12px;padding:8px 0;">Scanning Wi-Fi network for RemoteDesk Pro hosts...</div>
+      <div style="color:var(--muted);font-size:12px;padding:8px 0;">Scanning Wi-Fi &amp; Global Rendezvous for RemoteDesk Pro hosts...</div>
     </div>
   </div>
 
@@ -256,15 +256,17 @@
       list.forEach((item) => {
         const div = document.createElement('div');
         div.className = 'peer-item';
+        const displayId = item.machine_id ? `ID: ${item.machine_id} • ${item.host}` : item.host;
         div.innerHTML = `
           <div>
             <div class="peer-name">🖥️ ${item.name || item.host}</div>
-            <div class="peer-meta">${item.host}</div>
+            <div class="peer-meta">${displayId}</div>
           </div>
           <button class="btn-secondary">Select</button>
         `;
         div.onclick = () => {
-          hostInput.value = item.host;
+          // Prefer 9-digit Partner ID so it works on both Wi-Fi and 4G/5G Mobile Data
+          hostInput.value = item.machine_id || item.host;
           if (item.pin) pinInput.value = item.pin;
           pinInput.focus();
         };
@@ -272,10 +274,12 @@
       });
     }
 
+    let selectedPeerMeta = null;
+
     window.onAndroidPeersDiscovered = function(peers) {
       peersContainer.innerHTML = '';
       if (!peers || peers.length === 0) {
-        peersContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;">No hosts found automatically. Enter your PC LAN IP:8000 above.</div>';
+        peersContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;">No local Wi-Fi hosts found. Enter your PC\'s 9-digit Partner ID above to connect over 4G/5G Mobile Data or another Wi-Fi network.</div>';
         return;
       }
       peers.forEach((p) => {
@@ -289,7 +293,8 @@
           <button class="btn-secondary" style="border-color:var(--accent);color:var(--accent);">Connect</button>
         `;
         div.onclick = () => {
-          hostInput.value = p.host_addr;
+          selectedPeerMeta = p;
+          hostInput.value = p.machine_id || p.host_addr;
           if (p.pin && p.pin !== '••••••') {
             pinInput.value = p.pin;
             if (window.AndroidBridge) window.AndroidBridge.vibrate(25);
@@ -303,8 +308,17 @@
       });
     };
 
+    window.onAndroidConnectError = function(msg) {
+      const btn = document.getElementById('btn-connect');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<span>🚀</span> Connect to Computer';
+      }
+      errBox.innerText = msg || 'Connection failed.';
+    };
+
     document.getElementById('btn-scan').onclick = () => {
-      peersContainer.innerHTML = '<div style="color:var(--accent);font-size:12px;">Scanning Wi-Fi subnet & UDP 21116...</div>';
+      peersContainer.innerHTML = '<div style="color:var(--accent);font-size:12px;">Scanning Wi-Fi subnet, UDP 21116 &amp; Global Rendezvous...</div>';
       if (window.AndroidBridge) window.AndroidBridge.startLanScan();
     };
 
@@ -314,7 +328,7 @@
       const mode = document.querySelector('input[name="mode"]:checked').value;
 
       if (!host) {
-        errBox.innerText = 'Please enter your computer IP:Port (e.g. 192.168.1.50:8000) or tap a discovered PC.';
+        errBox.innerText = 'Please enter your computer\'s 9-digit Partner ID (e.g. 349 443 493) or LAN IP:Port.';
         return;
       }
       if (!pin) {
@@ -322,10 +336,22 @@
         return;
       }
 
+      errBox.innerText = '';
+      const btn = document.getElementById('btn-connect');
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span> Resolving &amp; Connecting...';
+
       if (window.AndroidBridge) {
         try {
-          const list = JSON.parse(window.AndroidBridge.getSavedHosts() || '[]').filter(x => x.host !== host);
-          list.unshift({ host, pin, name: host });
+          const machineId = (selectedPeerMeta && (selectedPeerMeta.machine_id === host || selectedPeerMeta.host_addr === host))
+            ? selectedPeerMeta.machine_id
+            : (/^[\d\s-]{6,14}$/.test(host) ? host : '');
+          const pubUrl = (selectedPeerMeta && selectedPeerMeta.public_url) ? selectedPeerMeta.public_url : '';
+          const hostName = (selectedPeerMeta && selectedPeerMeta.hostname) ? selectedPeerMeta.hostname : host;
+          const list = JSON.parse(window.AndroidBridge.getSavedHosts() || '[]').filter(
+            x => x.host !== host && (!machineId || x.machine_id !== machineId)
+          );
+          list.unshift({ host, machine_id: machineId, public_url: pubUrl, pin, name: hostName });
           window.AndroidBridge.saveHostsJson(JSON.stringify(list.slice(0, 6)));
         } catch (e) {}
         window.AndroidBridge.connectToHost(host, pin, mode);

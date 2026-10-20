@@ -152,6 +152,17 @@
 
                 <div class="feature-item">
                   <div class="feature-item-left">
+                    <span>🌍</span>
+                    <span>Mobile Data / Internet Tunnel</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span id="host-public-url-badge" class="font-mono" style="font-size: 11px; color: var(--accent); max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Provisioning...</span>
+                    <button id="btn-copy-public-url" class="icon-action-btn" style="width: 24px; height: 24px; font-size: 11px;" title="Copy Cross-Network Public URL">📋</button>
+                  </div>
+                </div>
+
+                <div class="feature-item">
+                  <div class="feature-item-left">
                     <span>🔑</span>
                     <span>Permanent Unattended Password</span>
                   </div>
@@ -752,7 +763,17 @@
         <button id="btn-session-disconnect" class="tb-btn danger" title="End Session &amp; Return to Hub">
           <span>✕</span> End
         </button>
+
+        <!-- Collapse Toolbar Button (Useful on Mobile Screens) -->
+        <button id="btn-toolbar-collapse" class="tb-btn" title="Minimize Control Bar">
+          <span>▲</span>
+        </button>
       </div>
+
+      <!-- Floating Pill to Expand Toolbar When Minimized -->
+      <button id="btn-toolbar-expand" class="hidden" title="Show Session Control Bar">
+        <span>▼</span> Controls
+      </button>
 
       <!-- In-Session Live Chat Drawer -->
       <div id="chat-drawer" class="hidden">

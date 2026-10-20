@@ -177,14 +177,20 @@ def test_rustdesk_api_endpoints_and_folder_zip(tmp_path):
 
     rv_reg = client.post(
         "/api/rendezvous/register",
-        json={"machine_id": "555 666 777", "hostname": "Lab-PC", "ips": ["192.168.1.99"], "port": 8000},
+        json={
+            "machine_id": "555 666 777",
+            "hostname": "Lab-PC",
+            "ips": ["192.168.1.99"],
+            "port": 8000,
+            "public_url": "https://test-tunnel.lhr.life",
+        },
     )
     assert rv_reg.status_code == 200
 
     resolve_res = client.get("/api/discovery/resolve?partner_id=555+666+777")
     assert resolve_res.status_code == 200
     assert resolve_res.json()["found"] is True
-    assert resolve_res.json()["url"] == "http://192.168.1.99:8000"
+    assert resolve_res.json()["url"] in ("http://192.168.1.99:8000", "https://test-tunnel.lhr.life")
 
     # 3. Folder ZIP download
     sample_dir = tmp_path / "my_folder"
@@ -243,5 +249,47 @@ def test_cross_thread_screen_capture():
     frame_bytes, has_changed, meta = asyncio.run(asyncio.to_thread(sc.capture_frame))
     assert len(frame_bytes) > 0
     assert meta["width"] > 0 and meta["height"] > 0
+
+
+def test_cross_network_tunnel_and_responsive_toolbar():
+    """Verify InternetTunnelManager URL extraction, Rendezvous public_url preference when off-LAN, and mobile toolbar CSS."""
+    from core.internet_tunnel import InternetTunnelManager, _LHR_URL_RE, _CF_URL_RE
+
+    sample_lhr = "authenticated as anonymous user, your tunneled http url is https://42f891bc9e0123.lhr.life"
+    m1 = _LHR_URL_RE.search(sample_lhr)
+    assert m1 is not None and m1.group(0) == "https://42f891bc9e0123.lhr.life"
+
+    sample_cf = "INF |  https://random-words-here.trycloudflare.com  |"
+    m2 = _CF_URL_RE.search(sample_cf)
+    assert m2 is not None and m2.group(0) == "https://random-words-here.trycloudflare.com"
+
+    mgr = InternetTunnelManager(local_port=8000)
+    st = mgr.get_status()
+    assert "public_url" in st and "status" in st
+
+    # Check RendezvousBroker resolve_best_url chooses public_url when LAN IP is unreachable
+    broker = RendezvousBroker()
+    broker.register_host(
+        machine_id="777 888 999",
+        hostname="Remote-Laptop",
+        os_name="Windows 11",
+        ips=["198.51.100.25"],
+        port=8000,
+        public_url="https://remote-laptop.lhr.life",
+    )
+    resolved = broker.resolve_best_url("777 888 999")
+    assert resolved is not None
+    assert resolved["url"] == "https://remote-laptop.lhr.life"
+    assert resolved["source"] == "public_tunnel"
+
+    # Check responsive mobile toolbar CSS & collapse button
+    root = Path(__file__).resolve().parent.parent
+    css_text = (root / "client" / "css" / "style.css").read_text(encoding="utf-8")
+    html_text = (root / "client" / "index.html").read_text(encoding="utf-8")
+    assert "flex-wrap: wrap" in css_text
+    assert "@media (max-width: 860px)" in css_text
+    assert "btn-toolbar-collapse" in html_text
+    assert "btn-toolbar-expand" in html_text
+
 
 

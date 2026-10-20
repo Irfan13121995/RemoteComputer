@@ -2,12 +2,14 @@
 Inspired by RustDesk's LAN discovery (UDP port 21116) and peer resolution.
 """
 
+import concurrent.futures
 import json
 import logging
 import platform
 import socket
 import threading
 import time
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 from core.tls import get_local_ips
@@ -45,6 +47,8 @@ class LanDiscoveryService:
 
         self._listener_thread: Optional[threading.Thread] = None
         self._broadcaster_thread: Optional[threading.Thread] = None
+        self._last_http_sweep_ts: float = 0.0
+        self._sweep_lock = threading.Lock()
 
     @staticmethod
     def normalize_id(partner_id: str) -> str:
@@ -169,7 +173,7 @@ class LanDiscoveryService:
         active.sort(key=lambda x: (not x.get("is_self", False), x.get("hostname", "")))
         return active
 
-    def resolve_partner_id(self, partner_id_or_host: str) -> Optional[str]:
+    def resolve_partner_id(self, partner_id_or_host: str, allow_subnet_sweep: bool = True) -> Optional[str]:
         """
         Resolve a 9-digit Partner ID (e.g. '360 523 800') to a full base URL (e.g. 'http://192.168.1.25:8000').
         Returns None if not found in LAN discovery table.
@@ -187,7 +191,79 @@ class LanDiscoveryService:
             peer = self._peers.get(norm)
             if peer:
                 return peer.get("url")
+
+        # If not yet in UDP cache and subnet sweep is allowed, perform a fast concurrent /24 HTTP probe
+        if allow_subnet_sweep and (time.time() - self._last_http_sweep_ts) > 5.0:
+            found_url = self.sweep_subnet_http(target_norm_id=norm)
+            if found_url:
+                return found_url
+
         return None
+
+    def _probe_single_http_host(self, ip: str, port: int, timeout: float = 0.28) -> Optional[Dict[str, Any]]:
+        """Probe http://ip:port/api/host-info to detect a RemoteDesk Pro host on the LAN."""
+        url = f"http://{ip}:{port}/api/host-info"
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    machine_id = data.get("machine_id")
+                    if machine_id:
+                        return self.register_peer(
+                            machine_id=str(machine_id),
+                            ip=ip,
+                            port=int(data.get("port", port)),
+                            hostname=str(data.get("hostname", "RemoteDesk-PC")),
+                            os_name=str(data.get("os", "Windows")),
+                            is_ssl=bool(data.get("ssl", False)),
+                        )
+        except Exception:
+            pass
+        return None
+
+    def sweep_subnet_http(self, target_norm_id: Optional[str] = None, timeout: float = 0.28) -> Optional[str]:
+        """
+        Concurrently scan the local /24 IPv4 subnet for active RemoteDesk Pro hosts over HTTP.
+        Works even when Windows Firewall or Wi-Fi routers drop UDP broadcast packets.
+        """
+        if not self._sweep_lock.acquire(blocking=False):
+            return None
+        try:
+            self._last_http_sweep_ts = time.time()
+            local_ips = [ip for ip in get_local_ips() if ip not in ("127.0.0.1", "::1") and "." in ip]
+            if not local_ips:
+                return None
+
+            # Use the primary LAN IPv4 subnet (prefer 192.168.x.x or 10.x.x.x)
+            primary_ip = local_ips[0]
+            for ip in local_ips:
+                if ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172."):
+                    primary_ip = ip
+                    break
+
+            parts = primary_ip.split(".")
+            if len(parts) != 4:
+                return None
+            prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+            candidate_ips = [f"{prefix}{i}" for i in range(1, 255) if f"{prefix}{i}" != primary_ip]
+
+            matched_url: Optional[str] = None
+            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+                future_to_ip = {
+                    executor.submit(self._probe_single_http_host, ip, self.http_port, timeout): ip
+                    for ip in candidate_ips
+                }
+                for future in concurrent.futures.as_completed(future_to_ip):
+                    entry = future.result()
+                    if entry and target_norm_id and entry.get("normalized_id") == target_norm_id:
+                        matched_url = entry.get("url")
+            return matched_url
+        except Exception as e:
+            logger.debug(f"HTTP subnet sweep error: {e}")
+            return None
+        finally:
+            self._sweep_lock.release()
 
     def start(self) -> None:
         """Start background UDP listener and periodic broadcaster threads."""
@@ -204,7 +280,7 @@ class LanDiscoveryService:
         self._running = False
 
     def trigger_broadcast_now(self) -> None:
-        """Send an immediate UDP broadcast probe."""
+        """Send an immediate UDP broadcast probe to 255.255.255.255 and directed /24 subnet broadcast addresses."""
         if not self.enabled:
             return
         try:
@@ -212,7 +288,16 @@ class LanDiscoveryService:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.settimeout(0.5)
             pkt = self.build_announcement_packet("probe")
-            sock.sendto(pkt, ("255.255.255.255", self.udp_port))
+            targets = {"255.255.255.255"}
+            for ip in get_local_ips():
+                parts = ip.split(".")
+                if len(parts) == 4 and ip != "127.0.0.1":
+                    targets.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
+            for target_addr in targets:
+                try:
+                    sock.sendto(pkt, (target_addr, self.udp_port))
+                except Exception:
+                    pass
             sock.close()
         except Exception as e:
             logger.debug(f"UDP broadcast probe error: {e}")

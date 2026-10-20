@@ -144,6 +144,43 @@ def launch_native_app_window(url: str) -> None:
         logger.warning(f"Failed to open browser window: {e}")
 
 
+def ensure_firewall_rules(tcp_port: int = 8000, udp_port: int = 21116) -> bool:
+    """
+    Attempt to add Windows Defender Firewall inbound allow rules for RemoteDesk Pro
+    (TCP port 8000 for HTTP/WS and UDP port 21116 for LAN discovery).
+    Fails silently if the process is not elevated.
+    """
+    if platform.system() != "Windows":
+        return False
+    creation_flags = 0x08000000  # CREATE_NO_WINDOW
+    ok = False
+    try:
+        commands = [
+            [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                "name=RemoteDesk Pro TCP", "dir=in", "action=allow",
+                "protocol=TCP", f"localport={tcp_port}",
+            ],
+            [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                "name=RemoteDesk Pro UDP Discovery", "dir=in", "action=allow",
+                "protocol=UDP", f"localport={udp_port}",
+            ],
+        ]
+        for cmd in commands:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=4,
+                creationflags=creation_flags,
+            )
+            if res.returncode == 0:
+                ok = True
+    except Exception as e:
+        logger.debug(f"Firewall rule check skipped: {e}")
+    return ok
+
+
 def get_windows_integration_status() -> Dict[str, Any]:
     """Return current Windows integration state (Auto-Start, Frozen EXE mode, Install dir)."""
     exe_path = get_executable_path()
