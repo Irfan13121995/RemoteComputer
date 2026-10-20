@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.audio_service import AudioService
 from core.auth import AuthManager
@@ -113,11 +113,11 @@ class PrivacyToggleRequest(BaseModel):
 
 
 class TunnelCreateRequest(BaseModel):
-    name: Optional[str] = ""
-    listen_port: int
-    target_host: str = "127.0.0.1"
-    target_port: int
-    listen_host: str = "127.0.0.1"
+    name: Optional[str] = Field(default="", max_length=64)
+    listen_port: int = Field(..., ge=0, le=65535)
+    target_host: str = Field(default="127.0.0.1", pattern=r"^(127\.0\.0\.1|localhost)$")
+    target_port: int = Field(..., ge=1, le=65535)
+    listen_host: str = Field(default="127.0.0.1", pattern=r"^(127\.0\.0\.1|localhost)$")
 
 
 class AutoStartRequest(BaseModel):
@@ -169,14 +169,51 @@ def create_app(
         is_ssl=discovery.is_ssl,
     )
 
-    # CORS configuration
+    # CORS configuration (disable credentials on wildcard origins to prevent cross-site credentialed reads)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data: blob:; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws: wss: http: https:;"
+        )
+        return response
+
+    def is_proxied_request(request: Request) -> bool:
+        """Return True if the request arrived via a reverse proxy / public SSH tunnel."""
+        return any(
+            h in request.headers
+            for h in ("x-forwarded-for", "x-real-ip", "forwarded", "cf-connecting-ip")
+        )
+
+    def get_effective_client_ip(request: Request) -> str:
+        """Resolve real client IP, honoring X-Forwarded-For when traffic arrives via local reverse tunnel."""
+        raw_ip = request.client.host if request.client else "127.0.0.1"
+        if raw_ip in ("127.0.0.1", "::1", "testclient"):
+            xff = request.headers.get("x-forwarded-for") or request.headers.get("cf-connecting-ip") or request.headers.get("x-real-ip")
+            if xff:
+                return xff.split(",")[0].strip()
+        return raw_ip
+
+    def is_local_console_request(request: Request) -> bool:
+        """Return True only if request originates directly from local machine (never over tunnel/proxy)."""
+        raw_ip = request.client.host if request.client else ""
+        return raw_ip in ("127.0.0.1", "::1", "testclient") and not is_proxied_request(request)
 
     def verify_auth_header(authorization: Optional[str] = Header(None)) -> bool:
         """Dependency to authenticate REST API requests."""
@@ -201,14 +238,16 @@ def create_app(
     # ════════════════════════════════════════════════════════════════════════
 
     @app.get("/api/host-info")
-    async def get_host_info():
-        """Public host information (Machine ID, LAN IPs, Public Tunnel URL, OS, monitors, permissions, privacy status)."""
+    async def get_host_info(request: Request, authorization: Optional[str] = Header(None)):
+        """Public host information (Redacts plaintext PIN for non-local / reverse-proxied requests)."""
         monitors = screen.get_monitors()
         active_rect = screen.get_current_monitor_rect()
         pub_url = internet_tunnel.public_url if internet_tunnel else ""
+        token = authorization.replace("Bearer ", "").strip() if authorization else ""
+        can_view_pin = is_local_console_request(request) or auth_manager.validate_session_token(token)
         return {
             "machine_id": auth_manager.get_machine_id(),
-            "pin": auth_manager.pin if not auth_manager.is_custom_password else "••••••",
+            "pin": (auth_manager.pin if (can_view_pin and not auth_manager.is_custom_password) else "••••••"),
             "has_password": auth_manager.is_custom_password,
             "has_permanent_password": cfg.has_permanent_password(),
             "hostname": platform.node(),
@@ -219,12 +258,16 @@ def create_app(
             "monitors": monitors,
             "active_monitor": screen.monitor_index,
             "monitor_rect": active_rect,
-            "local_ips": get_local_ips(),
-            "public_url": pub_url,
-            "internet_tunnel": internet_tunnel.get_status() if internet_tunnel else {"status": "disabled", "public_url": ""},
+            "local_ips": get_local_ips() if can_view_pin else [],
+            "public_url": pub_url if can_view_pin else "",
+            "internet_tunnel": (
+                internet_tunnel.get_status()
+                if (internet_tunnel and can_view_pin)
+                else {"status": "disabled", "public_url": ""}
+            ),
             "permissions": cfg.get_permissions(),
             "privacy_mode": privacy.get_status(),
-            "windows_integration": get_windows_integration_status(),
+            "windows_integration": get_windows_integration_status() if can_view_pin else {"is_windows": platform.system() == "Windows"},
             "version": "2.0.0",
             "status": "ready",
         }
@@ -232,7 +275,7 @@ def create_app(
     @app.post("/api/auth/login")
     async def login(req: LoginRequest, request: Request):
         """Authenticate with One-Time PIN or Unattended Permanent Password and receive session token."""
-        client_ip = request.client.host if request.client else "127.0.0.1"
+        client_ip = get_effective_client_ip(request)
         code = req.password or req.pin or ""
 
         success, token, message = auth_manager.verify_credentials(code, client_ip=client_ip)
@@ -355,9 +398,21 @@ def create_app(
         return {"peers": peers, "count": len(peers)}
 
     @app.websocket("/ws/relay/{channel_id}")
-    async def websocket_relay(websocket: WebSocket, channel_id: str, role: str = Query("client")):
-        """Relay (hbbr) endpoint: Bridge host and client WebSockets when behind symmetric NAT."""
+    async def websocket_relay(
+        websocket: WebSocket,
+        channel_id: str,
+        role: str = Query("client"),
+        token: Optional[str] = Query(None),
+        relay_key: Optional[str] = Query(None),
+    ):
+        """Relay (hbbr) endpoint: Bridge host and client WebSockets when behind symmetric NAT (requires auth token or relay_key)."""
         await websocket.accept()
+        expected_key = cfg.get_network_config().get("relay_key", "")
+        valid_token = auth_manager.validate_session_token(token)
+        valid_key = bool(expected_key and relay_key and relay_key == expected_key)
+        if not valid_token and not valid_key:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
         await rv_broker.bridge_relay_websocket(channel_id=channel_id, role=role, ws=websocket)
 
     # ════════════════════════════════════════════════════════════════════════
@@ -541,21 +596,40 @@ def create_app(
         """Get path to Host Desktop for dropzone upload."""
         return {"desktop_path": files.get_desktop_dir()}
 
+    MAX_UPLOAD_BYTES = 250 * 1024 * 1024  # 250 MB limit to prevent memory exhaustion DoS
+
     @app.post("/api/files/upload")
     async def upload_file(
         target_dir: str = Form(...),
         file: UploadFile = File(...),
         authorized: bool = Depends(verify_auth_header),
     ):
-        """Upload file to host folder."""
+        """Upload file to host folder with size cap and protected directory enforcement."""
         check_permission("allow_file_transfer")
         try:
-            content = await file.read()
-            saved_path = files.save_uploaded_file(target_dir, file.filename, content)
+            chunks = []
+            total_read = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Uploaded file exceeds 250 MB maximum limit.",
+                    )
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            saved_path = files.save_uploaded_file(target_dir, file.filename or "upload.bin", content)
             cfg.add_audit_event("FILE_UPLOAD", details=f"Uploaded {file.filename} ({len(content)} bytes)")
             return {"success": True, "saved_path": saved_path, "filename": file.filename, "size": len(content)}
+        except HTTPException:
+            raise
+        except PermissionError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     @app.get("/api/files/download")
     async def download_file(path: str = Query(...), token: Optional[str] = Query(None), authorization: Optional[str] = Header(None)):
@@ -565,7 +639,10 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
         check_permission("allow_file_transfer")
 
-        target = Path(path).resolve()
+        try:
+            target = files.validate_path_access(path)
+        except PermissionError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         if not target.exists() or target.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -693,8 +770,10 @@ def create_app(
         return None
 
     @app.get("/api/mobile/qr-info")
-    async def get_mobile_qr_info():
+    async def get_mobile_qr_info(request: Request, authorization: Optional[str] = Header(None)):
         """Return LAN & Public Internet Tunnel URLs for downloading the Android APK and instant QR pairing."""
+        token = authorization.replace("Bearer ", "").strip() if authorization else ""
+        can_view_pin = is_local_console_request(request) or auth_manager.validate_session_token(token)
         ips = get_local_ips()
         lan_ips = [ip for ip in ips if ip not in ("127.0.0.1", "::1")]
         primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
@@ -704,19 +783,19 @@ def create_app(
         pub_url = (internet_tunnel.public_url.rstrip("/") if (internet_tunnel and internet_tunnel.public_url) else "")
         preferred_base = pub_url if pub_url else lan_base_url
         apk_path = _find_android_apk()
-        pin_val = auth_manager.pin if not auth_manager.is_custom_password else ""
-        connect_url = f"{preferred_base}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
-        lan_connect_url = f"{lan_base_url}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
+        pin_val = (auth_manager.pin if (can_view_pin and not auth_manager.is_custom_password) else "")
+        connect_url = f"{preferred_base}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}" if can_view_pin else preferred_base
+        lan_connect_url = f"{lan_base_url}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}" if can_view_pin else lan_base_url
         apk_url = f"{preferred_base}/api/mobile/apk"
         lan_apk_url = f"{lan_base_url}/api/mobile/apk"
         return {
             "hostname": platform.node(),
             "machine_id": auth_manager.get_machine_id(),
-            "primary_ip": primary_ip,
+            "primary_ip": primary_ip if can_view_pin else "",
             "port": port,
             "base_url": preferred_base,
-            "lan_base_url": lan_base_url,
-            "public_url": pub_url,
+            "lan_base_url": lan_base_url if can_view_pin else "",
+            "public_url": pub_url if can_view_pin else "",
             "apk_url": apk_url,
             "lan_apk_url": lan_apk_url,
             "connect_url": connect_url,
@@ -791,6 +870,8 @@ def create_app(
             config_store=cfg,
             privacy_manager=privacy,
             audio_service=audio,
+            auth_manager=auth_manager,
+            session_token=token,
         )
 
         await session.start()

@@ -292,4 +292,54 @@ def test_cross_network_tunnel_and_responsive_toolbar():
     assert "btn-toolbar-expand" in html_text
 
 
+def test_security_hardening_remediations(tmp_path):
+    """Verify security audit remediations: PIN redaction on proxied requests, security headers, path protection, encrypted address book."""
+    import json
+    import pytest
+
+    cfg_path = tmp_path / "sec_cfg.json"
+    cfg = ConfigStore(config_path=cfg_path)
+    auth = AuthManager(pin="654321", config_store=cfg)
+    app = create_app(auth_manager=auth, config_store=cfg)
+    client = TestClient(app)
+
+    # 1. Local console request sees PIN, but reverse-proxied / tunneled request has PIN redacted + security headers
+    local_res = client.get("/api/host-info")
+    assert local_res.status_code == 200
+    assert local_res.json()["pin"] == "654321"
+    assert local_res.headers.get("x-frame-options") == "DENY"
+    assert local_res.headers.get("x-content-type-options") == "nosniff"
+    assert "default-src 'self'" in local_res.headers.get("content-security-policy", "")
+
+    proxied_res = client.get("/api/host-info", headers={"X-Forwarded-For": "203.0.113.99"})
+    assert proxied_res.status_code == 200
+    assert proxied_res.json()["pin"] == "••••••"
+
+    # 2. Address book password encryption at rest in config.json
+    cfg.save_address_book([{"alias": "ProdServer", "id": "111 222 333", "password": "SuperSecretPassword!"}])
+    raw_on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "password" not in raw_on_disk["address_book"][0]
+    assert "password_enc" in raw_on_disk["address_book"][0]
+    decrypted = cfg.get_address_book()
+    assert decrypted[0]["password"] == "SuperSecretPassword!"
+
+    # 3. FileManager blocks access to protected key files & config directory
+    fm = FileManager()
+    with pytest.raises(PermissionError):
+        fm.validate_path_access(str(tmp_path / "key.pem"))
+    with pytest.raises(PermissionError):
+        fm.validate_path_access(str(tmp_path / ".secret.key"))
+
+    # 4. IP whitelist enforced on X-Forwarded-For tunneled login attempts
+    cfg.update_network_config({"ip_whitelist": ["192.168.1.50"]})
+    blocked_login = client.post(
+        "/api/auth/login",
+        json={"pin": "654321"},
+        headers={"X-Forwarded-For": "198.51.100.77"},
+    )
+    assert blocked_login.status_code == 401
+    assert "whitelist" in blocked_login.json()["detail"].lower()
+
+
+
 

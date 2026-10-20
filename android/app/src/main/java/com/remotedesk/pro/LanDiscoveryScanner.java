@@ -422,7 +422,6 @@ public class LanDiscoveryScanner {
                             peer.put("machine_id", mid);
                             peer.put("hostname", info.optString("hostname", "Remote-PC"));
                             peer.put("os", info.optString("os", "Windows"));
-                            peer.put("pin", info.optString("pin", ""));
                             peer.put("public_url", info.optString("public_url", ""));
                             peer.put("ip", candidateIp);
                             peer.put("port", port);

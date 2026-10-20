@@ -31,6 +31,8 @@ class ClientSession:
         config_store: Optional[ConfigStore] = None,
         privacy_manager: Optional[PrivacyModeManager] = None,
         audio_service: Optional[AudioService] = None,
+        auth_manager: Optional[Any] = None,
+        session_token: Optional[str] = None,
     ):
         self.ws = websocket
         self.screen = screen_capture
@@ -39,6 +41,8 @@ class ClientSession:
         self.config_store = config_store
         self.privacy = privacy_manager or PrivacyModeManager()
         self.audio = audio_service or AudioService()
+        self.auth_manager = auth_manager
+        self.session_token = session_token
 
         self.fps = max(5, min(60, default_fps))
         self.adaptive_quality = False
@@ -103,6 +107,11 @@ class ClientSession:
         last_frame_time = 0.0
 
         while self.is_running:
+            if self.auth_manager and self.session_token and not self.auth_manager.validate_session_token(self.session_token):
+                logger.info("Session token revoked or expired; terminating active stream.")
+                self.is_running = False
+                break
+
             target_interval = 1.0 / self.fps
             now = time.time()
             elapsed = now - last_frame_time

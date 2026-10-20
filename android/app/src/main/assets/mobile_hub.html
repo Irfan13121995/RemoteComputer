@@ -236,6 +236,16 @@
     const peersContainer = document.getElementById('peers-container');
     const savedContainer = document.getElementById('saved-container');
 
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function loadSaved() {
       if (window.AndroidBridge) {
         const last = window.AndroidBridge.getLastHost();
@@ -259,8 +269,8 @@
         const displayId = item.machine_id ? `ID: ${item.machine_id} • ${item.host}` : item.host;
         div.innerHTML = `
           <div>
-            <div class="peer-name">🖥️ ${item.name || item.host}</div>
-            <div class="peer-meta">${displayId}</div>
+            <div class="peer-name">🖥️ ${escapeHtml(item.name || item.host)}</div>
+            <div class="peer-meta">${escapeHtml(displayId)}</div>
           </div>
           <button class="btn-secondary">Select</button>
         `;
@@ -287,8 +297,8 @@
         div.className = 'peer-item';
         div.innerHTML = `
           <div>
-            <div class="peer-name">🟢 ${p.hostname || 'Remote-PC'} (${p.os || 'Windows'})</div>
-            <div class="peer-meta">ID: ${p.machine_id} • ${p.host_addr}</div>
+            <div class="peer-name">🟢 ${escapeHtml(p.hostname || 'Remote-PC')} (${escapeHtml(p.os || 'Windows')})</div>
+            <div class="peer-meta">ID: ${escapeHtml(p.machine_id)} • ${escapeHtml(p.host_addr)}</div>
           </div>
           <button class="btn-secondary" style="border-color:var(--accent);color:var(--accent);">Connect</button>
         `;

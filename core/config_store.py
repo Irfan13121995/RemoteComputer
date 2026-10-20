@@ -70,11 +70,28 @@ class ConfigStore:
         self.load()
 
     def _generate_default_machine_id(self) -> str:
-        """Generate a deterministic 9-digit Partner ID (e.g., '360 523 800')."""
-        node_name = platform.node() or "default-remote-host"
-        val = int(hashlib.md5(node_name.encode("utf-8")).hexdigest()[:8], 16) % 900000000 + 100000000
+        """Generate a cryptographically random 9-digit Partner ID (e.g., '360 523 800')."""
+        val = secrets.randbelow(900_000_000) + 100_000_000
         s = str(val)
         return f"{s[:3]} {s[3:6]} {s[6:]}"
+
+    def _get_fernet(self):
+        """Return a Fernet cipher keyed by a machine-local secret file for encrypting saved credentials at rest."""
+        from cryptography.fernet import Fernet
+
+        key_file = self.config_dir / ".secret.key"
+        if key_file.exists():
+            try:
+                return Fernet(key_file.read_bytes().strip())
+            except Exception:
+                pass
+        key = Fernet.generate_key()
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            key_file.write_bytes(key)
+        except Exception:
+            pass
+        return Fernet(key)
 
     def load(self) -> Dict[str, Any]:
         """Load configuration from disk or initialize defaults."""
@@ -240,16 +257,36 @@ class ConfigStore:
             self.save()
             return dict(net)
 
-    # ── Address Book ──────────────────────────────────────────────────────────
+    # ── Address Book (Encrypted Credential Storage at Rest) ───────────────────
     def get_address_book(self) -> List[Dict[str, Any]]:
         with self._lock:
-            return list(self._data.get("address_book", []))
+            raw_entries = self._data.get("address_book", [])
+            cipher = self._get_fernet()
+            decrypted_list: List[Dict[str, Any]] = []
+            for item in raw_entries:
+                entry = dict(item)
+                enc_pwd = entry.pop("password_enc", None)
+                if enc_pwd:
+                    try:
+                        entry["password"] = cipher.decrypt(enc_pwd.encode("utf-8")).decode("utf-8")
+                    except Exception:
+                        entry["password"] = ""
+                decrypted_list.append(entry)
+            return decrypted_list
 
     def save_address_book(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         with self._lock:
-            self._data["address_book"] = entries
+            cipher = self._get_fernet()
+            stored_entries: List[Dict[str, Any]] = []
+            for item in entries:
+                entry = dict(item)
+                plain_pwd = entry.pop("password", "")
+                if plain_pwd:
+                    entry["password_enc"] = cipher.encrypt(str(plain_pwd).encode("utf-8")).decode("utf-8")
+                stored_entries.append(entry)
+            self._data["address_book"] = stored_entries
             self.save()
-            return list(entries)
+            return self.get_address_book()
 
     # ── Audit Log ─────────────────────────────────────────────────────────────
     def add_audit_event(self, event_type: str, client_ip: str = "127.0.0.1", details: str = "") -> Dict[str, Any]:

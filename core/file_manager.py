@@ -13,11 +13,37 @@ from typing import Any, Dict, List, Optional, Tuple
 import psutil
 
 
+from core.config_store import get_default_config_dir
+
+
 class FileManager:
     """Provides cross-platform remote file system operations including RustDesk-style folder ZIP archives."""
 
     def __init__(self):
         self.is_windows = platform.system() == "Windows"
+        self._protected_dirs = [
+            get_default_config_dir().resolve(),
+            (Path(__file__).resolve().parent.parent / "certs").resolve(),
+        ]
+        if self.is_windows:
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                self._protected_dirs.append(
+                    (Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup").resolve()
+                )
+
+    def validate_path_access(self, raw_path: str) -> Path:
+        """Resolve path and block access to protected application secrets, config, and startup directories."""
+        resolved = Path(raw_path).resolve()
+        for protected in self._protected_dirs:
+            try:
+                if resolved == protected or resolved.is_relative_to(protected):
+                    raise PermissionError(f"Access to protected directory '{protected.name}' is denied by security policy.")
+            except ValueError:
+                continue
+        if resolved.name.lower() in (".secret.key", "key.pem", "release.keystore"):
+            raise PermissionError(f"Access to protected key file '{resolved.name}' is denied by security policy.")
+        return resolved
 
     def get_drives_and_shortcuts(self) -> Dict[str, Any]:
         """Return list of available storage drives and standard user directories."""
@@ -67,7 +93,7 @@ class FileManager:
         if not directory_path or directory_path.strip() == "":
             directory_path = str(Path.home().resolve())
 
-        target_path = Path(directory_path).resolve()
+        target_path = self.validate_path_access(directory_path)
         if not target_path.exists() or not target_path.is_dir():
             raise FileNotFoundError(f"Directory not found: {directory_path}")
 
@@ -114,11 +140,13 @@ class FileManager:
 
     def save_uploaded_file(self, target_folder: str, filename: str, content: bytes) -> str:
         """Save an uploaded file safely into the target folder."""
-        dest_folder = Path(target_folder).resolve()
+        dest_folder = self.validate_path_access(target_folder)
         dest_folder.mkdir(parents=True, exist_ok=True)
 
         safe_filename = Path(filename).name
-        target_file = dest_folder / safe_filename
+        if not safe_filename or safe_filename in (".", ".."):
+            raise ValueError("Invalid filename")
+        target_file = self.validate_path_access(str(dest_folder / safe_filename))
 
         with open(target_file, "wb") as f:
             f.write(content)
@@ -127,7 +155,7 @@ class FileManager:
 
     def create_folder_zip_bytes(self, folder_path: str, max_bytes: int = 250 * 1024 * 1024) -> Tuple[bytes, str]:
         """Compress a folder into an in-memory .zip archive for one-click folder download."""
-        target = Path(folder_path).resolve()
+        target = self.validate_path_access(folder_path)
         if not target.exists() or not target.is_dir():
             raise FileNotFoundError(f"Directory not found: {folder_path}")
 
@@ -152,7 +180,7 @@ class FileManager:
 
     def delete_item(self, item_path: str) -> bool:
         """Delete a file or directory."""
-        target = Path(item_path).resolve()
+        target = self.validate_path_access(item_path)
         if not target.exists():
             return False
 
@@ -164,17 +192,17 @@ class FileManager:
 
     def create_dir(self, parent_folder: str, folder_name: str) -> str:
         """Create a new subdirectory."""
-        parent = Path(parent_folder).resolve()
-        new_dir = parent / Path(folder_name).name
+        parent = self.validate_path_access(parent_folder)
+        new_dir = self.validate_path_access(str(parent / Path(folder_name).name))
         new_dir.mkdir(parents=True, exist_ok=True)
         return str(new_dir.resolve())
 
     def rename_item(self, source_path: str, new_name: str) -> str:
         """Rename a file or folder."""
-        source = Path(source_path).resolve()
+        source = self.validate_path_access(source_path)
         if not source.exists():
             raise FileNotFoundError(f"Item not found: {source_path}")
 
-        dest = source.parent / Path(new_name).name
+        dest = self.validate_path_access(str(source.parent / Path(new_name).name))
         source.rename(dest)
         return str(dest.resolve())

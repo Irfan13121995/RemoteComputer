@@ -200,24 +200,28 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getLastHost() {
+            if (inRemoteSession) return "";
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             return prefs.getString(KEY_LAST_HOST, "");
         }
 
         @JavascriptInterface
         public String getSavedHosts() {
+            if (inRemoteSession) return "[]";
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             return prefs.getString(KEY_SAVED_HOSTS, "[]");
         }
 
         @JavascriptInterface
         public void saveHostsJson(String jsonArrayStr) {
+            if (inRemoteSession) return;
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             prefs.edit().putString(KEY_SAVED_HOSTS, jsonArrayStr).apply();
         }
 
         @JavascriptInterface
         public void startLanScan() {
+            if (inRemoteSession) return;
             LanDiscoveryScanner.scanNetworkAsync(MainActivity.this, (JSONArray peers) -> {
                 final String jsonStr = peers.toString();
                 runOnUiThread(() -> {

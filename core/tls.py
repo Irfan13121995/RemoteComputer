@@ -103,7 +103,7 @@ def generate_self_signed_cert(
             critical=False,
         )
         .add_extension(
-            x509.BasicConstraints(ca=True, path_length=None),
+            x509.BasicConstraints(ca=False, path_length=None),
             critical=True,
         )
     )

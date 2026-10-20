@@ -56,10 +56,11 @@ class AuthManager:
         """Return a formatted 9-digit Partner ID for this host (e.g. '349 443 493')."""
         if self.config_store is not None:
             return self.config_store.get_machine_id()
-        node_name = platform.node() or "default-remote-host"
-        val = int(hashlib.md5(node_name.encode("utf-8")).hexdigest()[:8], 16) % 900000000 + 100000000
-        s = str(val)
-        return f"{s[:3]} {s[3:6]} {s[6:]}"
+        if not hasattr(self, "_ephemeral_machine_id"):
+            val = secrets.randbelow(900_000_000) + 100_000_000
+            s = str(val)
+            self._ephemeral_machine_id = f"{s[:3]} {s[3:6]} {s[6:]}"
+        return self._ephemeral_machine_id
 
     def regenerate_pin(self) -> str:
         """Regenerate a new 6-digit session PIN."""
@@ -86,12 +87,13 @@ class AuthManager:
         return False, 0
 
     def record_attempt(self, client_ip: str, success: bool) -> None:
-        """Record an authentication attempt for rate limiting."""
+        """Record an authentication attempt for rate limiting with exponential lockout backoff."""
         now = time.time()
         if client_ip not in self._rate_limits:
             self._rate_limits[client_ip] = {
                 "failures": 0,
                 "lockout_until": 0,
+                "lockout_count": 0,
                 "last_attempt": now,
             }
 
@@ -101,10 +103,14 @@ class AuthManager:
         if success:
             record["failures"] = 0
             record["lockout_until"] = 0
+            record["lockout_count"] = 0
         else:
             record["failures"] += 1
             if record["failures"] >= self.max_failed_attempts:
-                record["lockout_until"] = now + self.lockout_duration
+                lockout_num = int(record.get("lockout_count", 0))
+                multiplier = min(10, 2 ** lockout_num)
+                record["lockout_until"] = now + (self.lockout_duration * multiplier)
+                record["lockout_count"] = lockout_num + 1
 
     def verify_credentials(self, provided_code: str, client_ip: str = "127.0.0.1") -> Tuple[bool, Optional[str], str]:
         """

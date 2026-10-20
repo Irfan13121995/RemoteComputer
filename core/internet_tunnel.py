@@ -143,13 +143,17 @@ class InternetTunnelManager:
 
     def _run_localhost_run_ssh(self, ssh_bin: str) -> None:
         """Establish reverse HTTPS tunnel using built-in OpenSSH and localhost.run."""
-        null_hosts = "NUL" if platform.system() == "Windows" else "/dev/null"
+        from core.config_store import get_default_config_dir
+
+        known_hosts_dir = get_default_config_dir()
+        known_hosts_dir.mkdir(parents=True, exist_ok=True)
+        known_hosts_file = str(known_hosts_dir / "tunnel_known_hosts")
         cmd = [
             ssh_bin,
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
-            f"UserKnownHostsFile={null_hosts}",
+            f"UserKnownHostsFile={known_hosts_file}",
             "-o",
             "ServerAliveInterval=25",
             "-o",
