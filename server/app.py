@@ -289,23 +289,31 @@ def create_app(
         1. Local LAN UDP Discovery Table
         2. Built-in Rendezvous (hbbs) Registry
         """
+        is_self = discovery.normalize_id(partner_id) == discovery.normalize_id(auth_manager.get_machine_id())
         # 1. Check LAN Discovery
         lan_url = discovery.resolve_partner_id(partner_id)
         if lan_url:
-            return {"found": True, "source": "lan_discovery", "url": lan_url, "partner_id": partner_id}
+            return {
+                "found": True,
+                "is_self": is_self,
+                "source": "lan_discovery",
+                "url": lan_url,
+                "partner_id": partner_id,
+            }
 
         # 2. Check Rendezvous Broker
         rv_entry = rv_broker.lookup_host(partner_id)
         if rv_entry and rv_entry.get("direct_url"):
             return {
                 "found": True,
+                "is_self": is_self,
                 "source": "rendezvous_server",
                 "url": rv_entry["direct_url"],
                 "partner_id": partner_id,
                 "host": rv_entry,
             }
 
-        return {"found": False, "partner_id": partner_id, "url": None}
+        return {"found": False, "is_self": is_self, "partner_id": partner_id, "url": None}
 
     @app.post("/api/rendezvous/register")
     async def rendezvous_register(req: RendezvousRegisterRequest, request: Request):
@@ -686,7 +694,7 @@ def create_app(
         base_url = f"{scheme}://{primary_ip}:{port}"
         apk_path = _find_android_apk()
         pin_val = auth_manager.pin if not auth_manager.is_custom_password else ""
-        connect_url = f"{base_url}/?autoconnect=1&mobile=1&pin={pin_val}"
+        connect_url = f"{base_url}/?autoconnect=1&mobile=1&show_desktop=1&pin={pin_val}"
         apk_url = f"{base_url}/api/mobile/apk"
         return {
             "hostname": platform.node(),

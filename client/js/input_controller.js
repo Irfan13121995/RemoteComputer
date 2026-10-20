@@ -23,6 +23,7 @@ class InputController {
     this.lastTouchPos = null;
     this.lastRawTouch = null;
     this.touchStartTime = 0;
+    this.lastTapTime = 0;
     this.touchMovedDistance = 0;
     this.maxTouchesInGesture = 0;
     this.longPressTimer = null;
@@ -77,9 +78,10 @@ class InputController {
     // Mouse Movement
     this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
 
-    // Mouse Down / Up
+    // Mouse Down / Up / Double-Click
     this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
     this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
+    this.canvas.addEventListener('dblclick', (e) => this.onDblClick(e));
 
     // Wheel
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -229,10 +231,21 @@ class InputController {
   onMouseDown(e) {
     if (!this.enabled || this.viewOnly) return;
     e.preventDefault();
+    try {
+      this.canvas.focus({ preventScroll: true });
+    } catch (err) {}
 
+    if (this.isPointerLocked) {
+      this.send({ type: 'mousedown', button: e.button });
+      return;
+    }
+
+    const coords = this.renderer.normalizeCoordinates(e.clientX, e.clientY);
     this.send({
       type: 'mousedown',
       button: e.button,
+      x: coords.x,
+      y: coords.y,
     });
   }
 
@@ -240,9 +253,31 @@ class InputController {
     if (!this.enabled || this.viewOnly) return;
     e.preventDefault();
 
+    if (this.isPointerLocked) {
+      this.send({ type: 'mouseup', button: e.button });
+      return;
+    }
+
+    const coords = this.renderer.normalizeCoordinates(e.clientX, e.clientY);
     this.send({
       type: 'mouseup',
       button: e.button,
+      x: coords.x,
+      y: coords.y,
+    });
+  }
+
+  onDblClick(e) {
+    if (!this.enabled || this.viewOnly) return;
+    e.preventDefault();
+
+    const coords = this.renderer.normalizeCoordinates(e.clientX, e.clientY);
+    this.send({
+      type: 'click',
+      button: 0,
+      count: 2,
+      x: coords.x,
+      y: coords.y,
     });
   }
 
@@ -416,13 +451,21 @@ class InputController {
           count: 1,
         });
       } else if (this.maxTouchesInGesture === 1 && duration < 280 && this.touchMovedDistance < 16) {
-        // Single-finger tap -> Left Click
-        this.vibrate(15);
-        this.send({
+        // Single-finger tap or double-tap -> Left Click / Double Click
+        const now = performance.now();
+        const isDoubleTap = (now - this.lastTapTime) < 320;
+        this.lastTapTime = isDoubleTap ? 0 : now;
+        this.vibrate(isDoubleTap ? 25 : 15);
+        const payload = {
           type: 'click',
           button: 0,
-          count: 1,
-        });
+          count: isDoubleTap ? 2 : 1,
+        };
+        if (this.touchMode === 'touch' && this.lastTouchPos && this.lastTouchPos.inside) {
+          payload.x = this.lastTouchPos.x;
+          payload.y = this.lastTouchPos.y;
+        }
+        this.send(payload);
       }
     }
 

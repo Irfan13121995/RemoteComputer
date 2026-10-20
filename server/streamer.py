@@ -48,7 +48,7 @@ class ClientSession:
         self.is_running = False
         self.frame_seq = 0
         self.last_client_ack_seq = 0
-        self.max_inflight_frames = 1  # Low latency backpressure: 1 in-flight frame max
+        self.max_inflight_frames = 4  # Sliding window backpressure with automatic stall recovery
         self._last_sent_time = 0.0
 
         self._stream_task: Optional[asyncio.Task] = None
@@ -110,10 +110,12 @@ class ClientSession:
             if elapsed < target_interval:
                 await asyncio.sleep(target_interval - elapsed)
 
-            # Flow control: Backpressure check
+            # Flow control: Backpressure check with 350ms stall auto-recovery for Wi-Fi/mobile clients
             if (self.frame_seq - self.last_client_ack_seq) > self.max_inflight_frames:
-                await asyncio.sleep(0.005)
-                continue
+                if (time.time() - self._last_sent_time) < 0.35:
+                    await asyncio.sleep(0.005)
+                    continue
+                self.last_client_ack_seq = self.frame_seq
 
             last_frame_time = time.time()
 
@@ -237,17 +239,20 @@ class ClientSession:
             if not self._perm_allowed("allow_keyboard_mouse"):
                 return
 
+            mon_rect = self.screen.get_current_monitor_rect()
+            nx = msg.get("x") if isinstance(msg.get("x"), (int, float)) else None
+            ny = msg.get("y") if isinstance(msg.get("y"), (int, float)) else None
+
             if msg_type == "mousemove":
-                mon_rect = self.screen.get_current_monitor_rect()
                 self.input.handle_mouse_move(msg.get("x", 0.0), msg.get("y", 0.0), mon_rect)
             elif msg_type == "mousemove_rel":
                 self.input.handle_mouse_move_relative(msg.get("dx", 0.0), msg.get("dy", 0.0))
             elif msg_type == "mousedown":
-                self.input.handle_mouse_button(msg.get("button", 0), is_down=True)
+                self.input.handle_mouse_button(msg.get("button", 0), is_down=True, norm_x=nx, norm_y=ny, monitor_rect=mon_rect)
             elif msg_type == "mouseup":
-                self.input.handle_mouse_button(msg.get("button", 0), is_down=False)
+                self.input.handle_mouse_button(msg.get("button", 0), is_down=False, norm_x=nx, norm_y=ny, monitor_rect=mon_rect)
             elif msg_type == "click":
-                self.input.handle_mouse_click(msg.get("button", 0), msg.get("count", 1))
+                self.input.handle_mouse_click(msg.get("button", 0), msg.get("count", 1), norm_x=nx, norm_y=ny, monitor_rect=mon_rect)
             elif msg_type == "wheel":
                 self.input.handle_mouse_scroll(msg.get("dx", 0.0), msg.get("dy", 0.0))
             elif msg_type == "keydown":

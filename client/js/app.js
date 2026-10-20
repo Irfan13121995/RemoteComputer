@@ -158,11 +158,34 @@ class RemoteDeskApp {
       });
     }
 
+    // 1-Click Instant Full Screen Share Banner Button
+    const btnInstantShare = document.getElementById('btn-instant-screen-share');
+    if (btnInstantShare) {
+      btnInstantShare.addEventListener('click', () => {
+        this.partnerIdInput.value = this.hostMachineId.innerText.trim();
+        const hostPin = this.hostPinDisplay.innerText.trim();
+        if (!this.partnerPassInput.value && hostPin && hostPin !== '••••••') {
+          this.partnerPassInput.value = hostPin;
+        }
+        this.handleConnect();
+      });
+    }
+
     // Quick Connect Pills
     document.querySelectorAll('.quick-host-pill').forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        this.partnerIdInput.value = e.target.getAttribute('data-host');
-        this.partnerPassInput.focus();
+        const hostAttr = e.currentTarget.getAttribute('data-host');
+        if (hostAttr === 'this-host' || hostAttr === 'localhost:8000') {
+          this.partnerIdInput.value = this.hostMachineId.innerText.trim();
+          const hostPin = this.hostPinDisplay.innerText.trim();
+          if (!this.partnerPassInput.value && hostPin && hostPin !== '••••••') {
+            this.partnerPassInput.value = hostPin;
+          }
+          this.handleConnect();
+        } else {
+          this.partnerIdInput.value = hostAttr;
+          this.partnerPassInput.focus();
+        }
       });
     });
 
@@ -173,6 +196,13 @@ class RemoteDeskApp {
     });
 
     // Session Toolbar Events
+    const btnShowDesktop = document.getElementById('btn-session-show-desktop');
+    if (btnShowDesktop) {
+      btnShowDesktop.addEventListener('click', () => {
+        this.sendWs({ type: 'special', action: 'win_d' });
+        this.showToast('Showing full Windows Desktop (Win+D)', 'info');
+      });
+    }
     document.getElementById('btn-session-audio').addEventListener('click', () => {
       this.toggleRemoteAudio();
     });
@@ -388,6 +418,19 @@ class RemoteDeskApp {
         this.hostMachineId.innerText = data.machine_id || '349 443 493';
         this.hostPinDisplay.innerText = data.pin || '••••••';
 
+        const bannerHost = document.getElementById('banner-host-name');
+        if (bannerHost) {
+          bannerHost.innerText = `${data.hostname || 'This Computer'} (${data.machine_id || ''})`;
+        }
+
+        // Pre-populate Partner ID and PIN on remote devices so 1-click connection works immediately
+        if (this.partnerIdInput && !this.partnerIdInput.value) {
+          this.partnerIdInput.value = data.machine_id || '';
+        }
+        if (this.partnerPassInput && !this.partnerPassInput.value && data.pin && data.pin !== '••••••') {
+          this.partnerPassInput.value = data.pin;
+        }
+
         if (data.monitor_rect) {
           const m = data.monitor_rect;
           this.hostDisplayInfo.innerText = `${m.width}x${m.height} (Display ${data.active_monitor})`;
@@ -572,7 +615,13 @@ class RemoteDeskApp {
   // ── CONNECT TO REMOTE PARTNER (WITH 9-DIGIT PARTNER ID RESOLUTION) ──────────
   async handleConnect() {
     const partnerId = this.partnerIdInput.value.trim();
-    const password = this.partnerPassInput.value.trim();
+    let password = this.partnerPassInput.value.trim();
+    const hostPin = this.hostPinDisplay ? this.hostPinDisplay.innerText.trim() : '';
+
+    if (!password && hostPin && hostPin !== '••••••') {
+      password = hostPin;
+      this.partnerPassInput.value = hostPin;
+    }
 
     if (!password) {
       this.connectError.innerText = 'Please enter the Partner One-Time PIN or Permanent Password.';
@@ -585,22 +634,43 @@ class RemoteDeskApp {
 
     try {
       let targetBaseUrl = window.location.origin;
+      const selfIdDigits = (this.hostMachineId.innerText || '').replace(/\D/g, '');
+      const targetIdDigits = partnerId.replace(/\D/g, '');
+      const isTargetingSelfHost =
+        !partnerId ||
+        partnerId === 'this-host' ||
+        partnerId.toLowerCase().startsWith('localhost') ||
+        partnerId.startsWith('127.0.0.1') ||
+        (selfIdDigits && targetIdDigits === selfIdDigits);
 
-      // 1. If user entered IP:Port or URL directly
-      if (partnerId.includes(':') || partnerId.includes('.') || partnerId.toLowerCase().startsWith('localhost')) {
+      if (isTargetingSelfHost) {
+        // Always use window.location.origin when connecting to the host serving this page!
+        targetBaseUrl = window.location.origin;
+      } else if (partnerId.includes(':') || partnerId.includes('.')) {
+        // Direct IP:Port or URL to a different computer
         if (!partnerId.startsWith('http://') && !partnerId.startsWith('https://')) {
           targetBaseUrl = `${window.location.protocol}//${partnerId}`;
         } else {
           targetBaseUrl = partnerId;
         }
       } else if (partnerId) {
-        // 2. User entered a 9-digit RustDesk-style Partner ID -> Resolve via LAN Discovery & Rendezvous Server
+        // 9-digit RustDesk-style Partner ID -> Resolve via LAN Discovery & Rendezvous Server
         try {
           const resLookup = await fetch(`/api/discovery/resolve?partner_id=${encodeURIComponent(partnerId)}`);
           if (resLookup.ok) {
             const lookupData = await resLookup.json();
-            if (lookupData.found && lookupData.url) {
-              targetBaseUrl = lookupData.url;
+            if (lookupData.is_self) {
+              targetBaseUrl = window.location.origin;
+            } else if (lookupData.found && lookupData.url) {
+              // Never redirect a remote client to 127.0.0.1 / localhost
+              if (
+                (lookupData.url.includes('127.0.0.1') || lookupData.url.includes('localhost')) &&
+                !['127.0.0.1', 'localhost'].includes(window.location.hostname)
+              ) {
+                targetBaseUrl = window.location.origin;
+              } else {
+                targetBaseUrl = lookupData.url;
+              }
             }
           }
         } catch (e) {
@@ -640,6 +710,9 @@ class RemoteDeskApp {
     this.hubView.classList.add('hidden');
     this.sessionView.classList.remove('hidden');
     this.renderer.resizeCanvas();
+    try {
+      this.canvas.focus({ preventScroll: true });
+    } catch (e) {}
   }
 
   switchToHubView() {
@@ -665,9 +738,18 @@ class RemoteDeskApp {
       this.connected = true;
       this.sessionStatusDot.className = 'status-dot';
       this.input.setEnabled(true);
-      this.showToast('Connected to Remote Desktop', 'success');
+      this.showToast('Connected to Remote Desktop — Live Screen Sharing Active', 'success');
       this.startPingLoop();
       this.fetchHostInfo();
+
+      // If "Minimize dashboard window & show full Windows desktop on connect" is checked, send Win+D
+      const chkShowDesktop = document.getElementById('chk-show-desktop-on-connect');
+      const isRemoteDevice = !['127.0.0.1', 'localhost'].includes(window.location.hostname);
+      if ((chkShowDesktop && chkShowDesktop.checked && isRemoteDevice) || new URLSearchParams(window.location.search).get('show_desktop') === '1') {
+        setTimeout(() => {
+          this.sendWs({ type: 'special', action: 'win_d' });
+        }, 350);
+      }
     };
 
     this.ws.onmessage = async (event) => {
@@ -732,18 +814,35 @@ class RemoteDeskApp {
 
   async handleBinaryFrame(blob) {
     this.bandwidthBytes += blob.size;
+    const seq = this.lastFrameMeta ? this.lastFrameMeta.seq : 0;
     try {
-      const bitmap = await createImageBitmap(blob);
-      this.renderer.renderFrame(bitmap);
-      bitmap.close();
-
-      this.fpsCounter++;
-
-      if (this.lastFrameMeta && this.lastFrameMeta.seq) {
-        this.sendWs({ type: 'ack', seq: this.lastFrameMeta.seq });
+      if (typeof createImageBitmap === 'function') {
+        const bitmap = await createImageBitmap(blob);
+        this.renderer.renderFrame(bitmap);
+        bitmap.close();
+      } else {
+        await new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+          img.onload = () => {
+            this.renderer.renderFrame(img);
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.onerror = (err) => {
+            URL.revokeObjectURL(url);
+            reject(err);
+          };
+          img.src = url;
+        });
       }
+      this.fpsCounter++;
     } catch (e) {
       console.warn('Frame render error:', e);
+    } finally {
+      if (seq) {
+        this.sendWs({ type: 'ack', seq });
+      }
     }
   }
 
@@ -1539,10 +1638,10 @@ class RemoteDeskApp {
     }
   }
 
-  checkUrlAutoConnect() {
+  async checkUrlAutoConnect() {
     const params = new URLSearchParams(window.location.search);
     const autoConnect = params.get('autoconnect');
-    const pin = params.get('pin') || '';
+    let pin = params.get('pin') || '';
     const mode = params.get('mode') || 'remote-control';
     const isMobile = params.get('mobile') === '1' || !!window.AndroidBridge;
 
@@ -1550,15 +1649,27 @@ class RemoteDeskApp {
       document.body.classList.add('mobile-client');
     }
 
-    if (autoConnect === '1' && pin) {
-      this.partnerPassInput.value = pin;
-      const modeRadio = document.querySelector(`input[name="conn-mode"][value="${mode}"]`);
-      if (modeRadio) modeRadio.checked = true;
+    if (autoConnect === '1') {
+      if (!pin) {
+        try {
+          const res = await fetch('/api/host-info');
+          if (res.ok) {
+            const info = await res.json();
+            if (info.pin && info.pin !== '••••••') {
+              pin = info.pin;
+            }
+          }
+        } catch (e) {}
+      }
+      if (pin) {
+        this.partnerPassInput.value = pin;
+        const modeRadio = document.querySelector(`input[name="conn-mode"][value="${mode}"]`);
+        if (modeRadio) modeRadio.checked = true;
 
-      // Clean URL parameters slightly so reload doesn't re-trigger if disconnected
-      setTimeout(() => {
-        this.handleConnect();
-      }, 250);
+        setTimeout(() => {
+          this.handleConnect();
+        }, 150);
+      }
     }
   }
 

@@ -74,6 +74,31 @@
         
         <!-- ── TAB 1: REMOTE CONTROL DUAL-CARD HUB + LAN DISCOVERY ── -->
         <div id="pane-remote" class="hub-tab-pane">
+
+          <!-- INSTANT FULL-SCREEN DESKTOP STREAMING BANNER -->
+          <div id="direct-host-control-banner" class="card" style="padding: 18px 24px; border-color: var(--accent); background: linear-gradient(135deg, rgba(0, 212, 255, 0.12), rgba(37, 99, 235, 0.10));">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <div style="font-size: 28px; background: var(--accent-dim); width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--accent);">🖥️</div>
+                <div>
+                  <h2 style="font-size: 16px; font-weight: 800; color: var(--text-primary);">
+                    Complete Screen Sharing &amp; Remote Control — <span id="banner-host-name" style="color: var(--accent);">This Computer</span>
+                  </h2>
+                  <p style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">
+                    Stream the entire physical Windows desktop with real-time mouse, keyboard, and multi-touch control.
+                  </p>
+                  <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); margin-top: 6px; cursor: pointer;">
+                    <input type="checkbox" id="chk-show-desktop-on-connect" checked style="accent-color: var(--accent);" />
+                    <span>Minimize dashboard window &amp; show full Windows desktop on connect (`Win+D`)</span>
+                  </label>
+                </div>
+              </div>
+              <button id="btn-instant-screen-share" class="btn-primary" style="width: auto; padding: 12px 22px; font-size: 14px; white-space: nowrap;">
+                <span>🖥️</span> Launch Full Screen Share Now
+              </button>
+            </div>
+          </div>
+
           <div class="hub-grid">
 
             <!-- LEFT CARD: ALLOW REMOTE CONTROL -->
@@ -199,7 +224,7 @@
               <!-- Quick Connect Pills -->
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Quick Connect:</span>
-                <button class="icon-action-btn quick-host-pill" data-host="localhost:8000" style="width: auto; padding: 4px 10px; font-size: 11px; font-weight: 600;">This Host (Localhost)</button>
+                <button class="icon-action-btn quick-host-pill" data-host="this-host" style="width: auto; padding: 4px 10px; font-size: 11px; font-weight: 600;">🖥️ This Computer (Direct Screen Share)</button>
               </div>
             </div>
 
@@ -631,7 +656,11 @@
 
         <div class="tb-divider"></div>
 
-        <!-- Interactive Controls (Including RustDesk Audio, Privacy Mode, Remote Cursor) -->
+        <!-- Interactive Controls (Including Show Desktop, RustDesk Audio, Privacy Mode, Remote Cursor) -->
+        <button id="btn-session-show-desktop" class="tb-btn" title="Show Full Windows Desktop / Minimize Covering Windows (Win+D)">
+          <span>🗔</span> Desktop
+        </button>
+
         <button id="btn-session-audio" class="tb-btn" title="Toggle Remote Audio Streaming">
           <span>🔇</span> Audio
         </button>

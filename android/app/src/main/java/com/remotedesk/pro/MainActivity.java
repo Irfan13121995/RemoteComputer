@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
         prefs.edit().putString(KEY_LAST_HOST, hostAddr.trim()).apply();
 
         final String targetUrl = cleanHost
-            + "/?autoconnect=1&mobile=1&pin=" + Uri.encode(pin != null ? pin.trim() : "")
+            + "/?autoconnect=1&mobile=1&show_desktop=1&pin=" + Uri.encode(pin != null ? pin.trim() : "")
             + "&mode=" + Uri.encode(mode != null ? mode : "remote-control");
 
         runOnUiThread(() -> webView.loadUrl(targetUrl));

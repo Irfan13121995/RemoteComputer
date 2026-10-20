@@ -224,3 +224,24 @@ def test_rustdesk_api_endpoints_and_folder_zip(tmp_path):
     assert apk_res.headers["content-type"] == "application/vnd.android.package-archive"
     assert apk_res.content[:2] == b"PK"
 
+    # 6. Verify self Partner ID resolution includes is_self=True so remote clients stay on host origin
+    self_id = auth.get_machine_id()
+    self_resolve = client.get(f"/api/discovery/resolve?partner_id={self_id}")
+    assert self_resolve.status_code == 200
+    assert self_resolve.json()["is_self"] is True
+
+
+def test_cross_thread_screen_capture():
+    """Ensure ScreenCapture uses thread-local MSS instances so worker threads never fail GDI BitBlt."""
+    import asyncio
+    from core.screen import ScreenCapture
+
+    sc = ScreenCapture()
+    monitors = sc.get_monitors()
+    assert len(monitors) >= 1
+
+    frame_bytes, has_changed, meta = asyncio.run(asyncio.to_thread(sc.capture_frame))
+    assert len(frame_bytes) > 0
+    assert meta["width"] > 0 and meta["height"] > 0
+
+

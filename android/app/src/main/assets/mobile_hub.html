@@ -286,12 +286,18 @@
             <div class="peer-name">🟢 ${p.hostname || 'Remote-PC'} (${p.os || 'Windows'})</div>
             <div class="peer-meta">ID: ${p.machine_id} • ${p.host_addr}</div>
           </div>
-          <button class="btn-secondary" style="border-color:var(--accent);color:var(--accent);">Tap</button>
+          <button class="btn-secondary" style="border-color:var(--accent);color:var(--accent);">Connect</button>
         `;
         div.onclick = () => {
           hostInput.value = p.host_addr;
-          pinInput.focus();
-          if (window.AndroidBridge) window.AndroidBridge.vibrate(20);
+          if (p.pin && p.pin !== '••••••') {
+            pinInput.value = p.pin;
+            if (window.AndroidBridge) window.AndroidBridge.vibrate(25);
+            document.getElementById('btn-connect').click();
+          } else {
+            pinInput.focus();
+            if (window.AndroidBridge) window.AndroidBridge.vibrate(20);
+          }
         };
         peersContainer.appendChild(div);
       });
