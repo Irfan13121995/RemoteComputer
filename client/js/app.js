@@ -12,6 +12,8 @@ class RemoteDeskApp {
     this.activeHostUrl = window.location.origin;
     this.connected = false;
     this.lastFrameMeta = null;
+    this._frameDecodeChain = Promise.resolve();
+    this._latestKeyframeSeq = 0;
 
     // Performance metrics
     this.fpsCounter = 0;
@@ -101,10 +103,13 @@ class RemoteDeskApp {
     this.sessionStatusDot = document.getElementById('session-status-dot');
     this.sessionLatencyBadge = document.getElementById('session-latency-badge');
     this.sessionFpsBadge = document.getElementById('session-fps-badge');
+    this.sessionResBadge = document.getElementById('session-res-badge');
     this.sessionBandwidthBadge = document.getElementById('session-bandwidth-badge');
     this.recordingBadge = document.getElementById('recording-badge');
     this.sessionMonitorSelect = document.getElementById('session-monitor-select');
+    this.sessionResolutionSelect = document.getElementById('session-resolution-select');
     this.sessionQualitySelect = document.getElementById('session-quality-select');
+    this.btnSessionZoomReset = document.getElementById('btn-session-zoom-reset');
     this.sessionActionsDropdown = document.getElementById('session-actions-dropdown');
     this.chatDrawer = document.getElementById('chat-drawer');
     this.vkDrawer = document.getElementById('vk-drawer');
@@ -225,6 +230,7 @@ class RemoteDeskApp {
     document.getElementById('btn-session-cursor').addEventListener('click', (e) => {
       this.renderer.showRemoteCursor = !this.renderer.showRemoteCursor;
       e.currentTarget.classList.toggle('active', this.renderer.showRemoteCursor);
+      this.renderer.scheduleRender();
       this.showToast(`Remote cursor ${this.renderer.showRemoteCursor ? 'shown' : 'hidden'}`, 'info');
     });
     const btnTouchMode = document.getElementById('btn-session-touch-mode');
@@ -317,15 +323,29 @@ class RemoteDeskApp {
       }
     });
 
-    // Monitor & Quality presets
+    // Monitor, Resolution & Quality presets
     document.getElementById('session-monitor-select').addEventListener('change', (e) => {
       const monIdx = parseInt(e.target.value, 10);
-      this.sendWs({ type: 'config', monitor: monIdx });
+      this.sendWs({ type: 'config', monitor: monIdx, force_keyframe: true });
       this.showToast(`Switched to Display ${monIdx}`, 'success');
     });
+    if (this.sessionResolutionSelect) {
+      this.sessionResolutionSelect.addEventListener('change', (e) => {
+        const scale = parseFloat(e.target.value) || 1.0;
+        this.sendWs({ type: 'config', scale, force_keyframe: true });
+        this.showToast(`Resolution set to ${Math.round(scale * 100)}%`, 'success');
+      });
+    }
     document.getElementById('session-quality-select').addEventListener('change', (e) => {
       this.applyQualityPreset(e.target.value);
     });
+    if (this.btnSessionZoomReset) {
+      this.btnSessionZoomReset.addEventListener('click', () => {
+        this.renderer.resetZoom();
+        this.onZoomChanged(1.0);
+        this.showToast('Reset viewport zoom to 100%', 'info');
+      });
+    }
 
     // Clipboard Modal Buttons
     document.getElementById('btn-copy-to-remote').addEventListener('click', () => {
@@ -396,7 +416,15 @@ class RemoteDeskApp {
 
       this.renderer.setScalingMode(scaling);
       this.input.mapCmdToCtrl = mapCmd;
-      this.sendWs({ type: 'config', quality, fps, format, skip_static: skipStatic });
+      this.sendWs({
+        type: 'config',
+        quality,
+        fps,
+        format,
+        subsampling: quality >= 80 ? 0 : 2,
+        skip_static: skipStatic,
+        force_keyframe: true,
+      });
       this.showToast('Stream configuration applied', 'success');
     });
   }
@@ -780,24 +808,28 @@ class RemoteDeskApp {
     this.input.setEnabled(false);
   }
 
-  // ── WEBSOCKET STREAMING ENGINE ──────────────────────────────────────────────
+  // ── WEBSOCKET STREAMING ENGINE (RDP2 BINARY DELTA + 4:4:4 TURBO JPEG) ──────
   connectWebSocket() {
     if (this.ws) this.ws.close();
+
+    this._frameDecodeChain = Promise.resolve();
+    this._latestKeyframeSeq = 0;
 
     const isSecure = this.activeHostUrl.startsWith('https:');
     const wsProto = isSecure ? 'wss:' : 'ws:';
     const hostWithPort = this.activeHostUrl.replace(/^https?:\/\//, '');
-    const wsUrl = `${wsProto}//${hostWithPort}/ws/stream?token=${encodeURIComponent(this.token)}`;
+    const wsUrl = `${wsProto}//${hostWithPort}/ws/stream?token=${encodeURIComponent(this.token)}&proto=rdp2`;
 
     this.sessionStatusDot.className = 'status-dot connecting';
     this.ws = new WebSocket(wsUrl);
-    this.ws.binaryType = 'blob';
+    this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => {
       this.connected = true;
       this.sessionStatusDot.className = 'status-dot';
       this.input.setEnabled(true);
-      this.showToast('Connected to Remote Desktop — Live Screen Sharing Active', 'success');
+      this.syncActiveStreamPreset(false);
+      this.showToast('Connected — High-FPS Crisp 1:1 Desktop Stream Active', 'success');
       this.startPingLoop();
       this.fetchHostInfo();
 
@@ -811,9 +843,11 @@ class RemoteDeskApp {
       }
     };
 
-    this.ws.onmessage = async (event) => {
+    this.ws.onmessage = (event) => {
       if (typeof event.data === 'string') {
         this.handleTextMessage(JSON.parse(event.data));
+      } else if (event.data instanceof ArrayBuffer) {
+        this.handleRdp2BinaryPacket(event.data);
       } else if (event.data instanceof Blob) {
         this.handleBinaryFrame(event.data);
       }
@@ -869,6 +903,96 @@ class RemoteDeskApp {
     } else if (msg.type === 'clipboard_sync') {
       this.showToast('Remote clipboard updated', 'info');
     }
+  }
+
+  handleRdp2BinaryPacket(arrayBuffer) {
+    this.bandwidthBytes += arrayBuffer.byteLength;
+    if (arrayBuffer.byteLength < 30) {
+      return;
+    }
+
+    const view = new DataView(arrayBuffer);
+    const magic = view.getUint32(0, false);
+    if (magic !== 0x52445032) {
+      // Fallback for legacy non-RDP2 binary blob
+      this.handleBinaryFrame(new Blob([arrayBuffer]));
+      return;
+    }
+
+    const frameType = view.getUint8(4);   // 0=Keyframe, 1=Delta, 2=SettlingKeyframe, 3=CursorOnly
+    const formatCode = view.getUint8(5);  // 0=JPEG, 1=WebP, 2=None
+    const seq = view.getUint32(6, false);
+    const fullW = view.getUint16(10, false);
+    const fullH = view.getUint16(12, false);
+    const rectX = view.getUint16(14, false);
+    const rectY = view.getUint16(16, false);
+    const rectW = view.getUint16(18, false);
+    const rectH = view.getUint16(20, false);
+    const cxU16 = view.getUint16(22, false);
+    const cyU16 = view.getUint16(24, false);
+    const origW = view.getUint16(26, false);
+    const origH = view.getUint16(28, false);
+
+    // Immediately ACK receipt so server sliding window never stalls waiting for client GPU decode
+    if (seq > 0) {
+      this.sendWs({ type: 'ack', seq });
+    }
+
+    this.renderer.setRemoteCursor(cxU16 / 65535.0, cyU16 / 65535.0);
+    if (this.sessionResBadge && fullW > 0 && fullH > 0) {
+      this.sessionResBadge.innerText = `${fullW}×${fullH}`;
+    }
+
+    // Cursor-only packet (0 image bytes when screen is static & settled)
+    if (frameType === 3 || arrayBuffer.byteLength <= 30) {
+      this.renderer.scheduleRender();
+      return;
+    }
+
+    const isFullFrame = (frameType === 0 || frameType === 2);
+    if (isFullFrame) {
+      this._latestKeyframeSeq = seq;
+    }
+
+    const mime = formatCode === 1 ? 'image/webp' : 'image/jpeg';
+    const payloadBytes = new Uint8Array(arrayBuffer, 30);
+    const blob = new Blob([payloadBytes], { type: mime });
+
+    this._frameDecodeChain = this._frameDecodeChain
+      .then(async () => {
+        if (seq < this._latestKeyframeSeq) {
+          return;
+        }
+        if (typeof createImageBitmap === 'function') {
+          const bitmap = await createImageBitmap(blob);
+          if (seq >= this._latestKeyframeSeq) {
+            this.renderer.applyFramePatch(bitmap, fullW, fullH, rectX, rectY, rectW, rectH, isFullFrame, origW, origH);
+            this.fpsCounter++;
+          }
+          bitmap.close();
+        } else {
+          await new Promise((resolve) => {
+            const url = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+              if (seq >= this._latestKeyframeSeq) {
+                this.renderer.applyFramePatch(img, fullW, fullH, rectX, rectY, rectW, rectH, isFullFrame, origW, origH);
+                this.fpsCounter++;
+              }
+              URL.revokeObjectURL(url);
+              resolve();
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(url);
+              resolve();
+            };
+            img.src = url;
+          });
+        }
+      })
+      .catch((err) => {
+        console.debug('RDP2 frame decode skipped:', err);
+      });
   }
 
   async handleBinaryFrame(blob) {
@@ -968,12 +1092,13 @@ class RemoteDeskApp {
   // ── IN-SESSION TOOLS: SCREENSHOT, RECORDING, CHAT ───────────────────────────
   takeScreenshot() {
     try {
-      const dataUrl = this.canvas.toDataURL('image/png');
+      const sourceCanvas = this.renderer && this.renderer._hasBackingFrame ? this.renderer.backingCanvas : this.canvas;
+      const dataUrl = sourceCanvas.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = dataUrl;
       a.download = `RemoteDesktop_Screenshot_${Date.now()}.png`;
       a.click();
-      this.showToast('Screenshot saved to Downloads', 'success');
+      this.showToast('Full-resolution PNG screenshot saved to Downloads', 'success');
     } catch (e) {
       this.showToast('Failed to save screenshot', 'error');
     }
@@ -1620,18 +1745,81 @@ class RemoteDeskApp {
   }
 
   // ── UTILITIES ───────────────────────────────────────────────────────────────
-  applyQualityPreset(preset) {
+  syncActiveStreamPreset(showNotification = true) {
+    const preset = this.sessionQualitySelect ? this.sessionQualitySelect.value : 'ultra';
+    this.applyQualityPreset(preset, showNotification);
+  }
+
+  applyQualityPreset(preset, showNotification = true) {
+    const selectedScale = this.sessionResolutionSelect ? (parseFloat(this.sessionResolutionSelect.value) || 1.0) : 1.0;
+
     if (preset === 'auto') {
-      this.sendWs({ type: 'config', adaptive: true });
-      this.showToast('Enabled RustDesk Auto Adaptive Quality', 'success');
+      this.sendWs({
+        type: 'config',
+        proto: 'rdp2',
+        adaptive: true,
+        fps: 60,
+        scale: selectedScale,
+        format: 'jpeg',
+        force_keyframe: true,
+      });
+      if (showNotification) {
+        this.showToast('Enabled Motion-Aware Auto Adaptive Quality (4:4:4 Settling)', 'success');
+      }
       return;
     }
-    let fps = 30, quality = 70;
-    if (preset === 'high') { fps = 60; quality = 85; }
-    else if (preset === 'balanced') { fps = 30; quality = 70; }
-    else if (preset === 'low') { fps = 20; quality = 45; }
-    this.sendWs({ type: 'config', adaptive: false, fps, quality });
-    this.showToast(`Applied ${preset} stream preset`, 'success');
+
+    let fps = 60;
+    let quality = 86;
+    let subsampling = 0; // 4:4:4 Chroma (razor-sharp desktop text)
+    let scale = selectedScale;
+
+    if (preset === 'ultra') {
+      fps = 60;
+      quality = 86;
+      subsampling = 0;
+    } else if (preset === 'high') {
+      fps = 60;
+      quality = 80;
+      subsampling = 0;
+    } else if (preset === 'balanced') {
+      fps = 45;
+      quality = 75;
+      subsampling = 2; // Fast 4:2:0 motion + automatic 220ms 4:4:4 q=92 settling
+    } else if (preset === 'low') {
+      fps = 30;
+      quality = 58;
+      subsampling = 2;
+      if (scale > 0.75) {
+        scale = 0.75;
+        if (this.sessionResolutionSelect) this.sessionResolutionSelect.value = '0.75';
+      }
+    }
+
+    this.sendWs({
+      type: 'config',
+      proto: 'rdp2',
+      adaptive: false,
+      fps,
+      quality,
+      subsampling,
+      scale,
+      format: 'jpeg',
+      force_keyframe: true,
+    });
+    if (showNotification) {
+      this.showToast(`Applied ${preset.toUpperCase()} preset (${fps} FPS, ${Math.round(scale * 100)}% res)`, 'success');
+    }
+  }
+
+  onZoomChanged(zoom) {
+    if (!this.btnSessionZoomReset) return;
+    if (zoom > 1.02) {
+      this.btnSessionZoomReset.classList.remove('hidden');
+      this.btnSessionZoomReset.innerHTML = `<span>🔍</span> ${zoom.toFixed(1)}x`;
+    } else {
+      this.btnSessionZoomReset.classList.add('hidden');
+    }
   }
 
   triggerSpecialAction(action) {

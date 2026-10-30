@@ -138,7 +138,7 @@ def create_app(
     audio_service: Optional[AudioService] = None,
     tunnel_manager: Optional[TcpTunnelManager] = None,
     internet_tunnel: Optional[InternetTunnelManager] = None,
-    default_fps: int = 30,
+    default_fps: int = 60,
 ) -> FastAPI:
     """Create and configure FastAPI application instance with full RustDesk feature suite."""
     app = FastAPI(title="RemoteDesk Pro Host", version="2.0.0")
@@ -852,8 +852,12 @@ def create_app(
     # ════════════════════════════════════════════════════════════════════════
 
     @app.websocket("/ws/stream")
-    async def websocket_stream(websocket: WebSocket, token: Optional[str] = Query(None)):
-        """WebSocket endpoint for remote desktop video frames, audio, privacy mode, chat, and input sync."""
+    async def websocket_stream(
+        websocket: WebSocket,
+        token: Optional[str] = Query(None),
+        proto: str = Query("legacy"),
+    ):
+        """WebSocket endpoint for remote desktop video frames (RDP2 binary delta or legacy), audio, privacy mode, chat, and input sync."""
         await websocket.accept()
 
         if not auth_manager.validate_session_token(token):
@@ -872,6 +876,7 @@ def create_app(
             audio_service=audio,
             auth_manager=auth_manager,
             session_token=token,
+            use_rdp2=(proto.lower() == "rdp2"),
         )
 
         await session.start()

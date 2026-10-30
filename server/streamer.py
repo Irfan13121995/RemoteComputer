@@ -1,8 +1,9 @@
-"""WebSocket streaming session manager, adaptive bitrate controller, audio streamer, privacy mode, and input router."""
+"""WebSocket streaming session manager, RDP2 binary delta protocol, adaptive quality controller, audio streamer, privacy mode, and input router."""
 
 import asyncio
 import json
 import logging
+import struct
 import time
 from typing import Any, Dict, Optional
 
@@ -13,9 +14,24 @@ from core.clipboard import ClipboardManager
 from core.config_store import ConfigStore
 from core.input_handler import InputHandler
 from core.privacy_mode import PrivacyModeManager
-from core.screen import ScreenCapture
+from core.screen import (
+    DeltaCaptureState,
+    FORMAT_CODE_JPEG,
+    FORMAT_CODE_NONE,
+    FORMAT_CODE_WEBP,
+    FRAME_CURSOR_ONLY,
+    FRAME_DELTA,
+    FRAME_KEYFRAME,
+    FRAME_SETTLING,
+    ScreenCapture,
+)
 
 logger = logging.getLogger(__name__)
+
+# 30-byte binary header for RDP2 single-packet video frames:
+# magic(4s) | frame_type(B) | format_code(B) | seq(I) | full_w(H) | full_h(H) |
+# rect_x(H) | rect_y(H) | rect_w(H) | rect_h(H) | cursor_x(H) | cursor_y(H) | orig_w(H) | orig_h(H)
+RDP2_HEADER = struct.Struct("!4sBBIHHHHHHHHHH")
 
 
 class ClientSession:
@@ -27,12 +43,13 @@ class ClientSession:
         screen_capture: ScreenCapture,
         input_handler: InputHandler,
         clipboard_manager: ClipboardManager,
-        default_fps: int = 30,
+        default_fps: int = 60,
         config_store: Optional[ConfigStore] = None,
         privacy_manager: Optional[PrivacyModeManager] = None,
         audio_service: Optional[AudioService] = None,
         auth_manager: Optional[Any] = None,
         session_token: Optional[str] = None,
+        use_rdp2: bool = False,
     ):
         self.ws = websocket
         self.screen = screen_capture
@@ -43,17 +60,29 @@ class ClientSession:
         self.audio = audio_service or AudioService()
         self.auth_manager = auth_manager
         self.session_token = session_token
+        self.use_rdp2 = bool(use_rdp2)
 
+        # Per-session isolated streaming configuration (never clobbers other sessions)
         self.fps = max(5, min(60, default_fps))
+        self.quality = max(10, min(100, screen_capture.quality))
+        self.user_scale = max(0.25, min(1.0, screen_capture.scale))
+        self.active_scale = self.user_scale
+        self.format = screen_capture.format
+        self.subsampling = screen_capture.subsampling
+        self.monitor_index = screen_capture.monitor_index
+
         self.adaptive_quality = False
-        self.skip_static_frames = False
-        self.last_rtt_ms = 20
+        self.skip_static_frames = True
+        self.force_keyframe = True
+        self.delta_state = DeltaCaptureState()
+        self.last_rtt_ms = 15.0
 
         self.is_running = False
         self.frame_seq = 0
         self.last_client_ack_seq = 0
-        self.max_inflight_frames = 4  # Sliding window backpressure with automatic stall recovery
+        self.max_inflight_frames = 12 if self.use_rdp2 else 4
         self._last_sent_time = 0.0
+        self._ws_send_lock = asyncio.Lock()
 
         self._stream_task: Optional[asyncio.Task] = None
         self._clipboard_task: Optional[asyncio.Task] = None
@@ -65,6 +94,14 @@ class ClientSession:
             return True
         perms = self.config_store.get_permissions()
         return bool(perms.get(perm_key, True))
+
+    async def _send_text(self, payload: str) -> None:
+        async with self._ws_send_lock:
+            await self.ws.send_text(payload)
+
+    async def _send_bytes(self, payload: bytes) -> None:
+        async with self._ws_send_lock:
+            await self.ws.send_bytes(payload)
 
     async def start(self) -> None:
         """Start streaming, audio, and input listener loops."""
@@ -103,74 +140,143 @@ class ClientSession:
             pass
 
     async def _streaming_loop(self) -> None:
-        """Continuously captures, encodes, and transmits screen frames."""
+        """Continuously captures, encodes, and transmits screen frames (RDP2 binary delta or legacy mode)."""
         last_frame_time = 0.0
 
         while self.is_running:
-            if self.auth_manager and self.session_token and not self.auth_manager.validate_session_token(self.session_token):
+            if (
+                self.auth_manager
+                and self.session_token
+                and not self.auth_manager.validate_session_token(self.session_token)
+            ):
                 logger.info("Session token revoked or expired; terminating active stream.")
                 self.is_running = False
                 break
 
-            target_interval = 1.0 / self.fps
-            now = time.time()
+            target_interval = 1.0 / max(5, self.fps)
+            now = time.perf_counter()
             elapsed = now - last_frame_time
 
             if elapsed < target_interval:
                 await asyncio.sleep(target_interval - elapsed)
 
-            # Flow control: Backpressure check with 350ms stall auto-recovery for Wi-Fi/mobile clients
+            # Sliding-window backpressure check with fast stall auto-recovery
+            stall_timeout = 0.25 if self.use_rdp2 else 0.35
             if (self.frame_seq - self.last_client_ack_seq) > self.max_inflight_frames:
-                if (time.time() - self._last_sent_time) < 0.35:
-                    await asyncio.sleep(0.005)
+                if (time.perf_counter() - self._last_sent_time) < stall_timeout:
+                    await asyncio.sleep(0.003)
                     continue
                 self.last_client_ack_seq = self.frame_seq
 
-            last_frame_time = time.time()
+            last_frame_time = time.perf_counter()
 
             try:
-                frame_bytes, has_changed, meta = await asyncio.to_thread(self.screen.capture_frame)
+                if self.use_rdp2:
+                    if self.adaptive_quality:
+                        self._adjust_adaptive_quality(self.last_rtt_ms)
+                    eff_scale = self.active_scale if self.adaptive_quality else self.user_scale
+                    need_kf = self.force_keyframe
 
-                # RustDesk-style static frame skipping when enabled (always send first frame or keyframe every 1.5s)
-                if (
-                    self.skip_static_frames
-                    and self.frame_seq > 1
-                    and not has_changed
-                    and (time.time() - self._last_sent_time) < 1.5
-                ):
-                    continue
-
-                self.frame_seq += 1
-                self._last_sent_time = time.time()
-                meta["seq"] = self.frame_seq
-
-                # 1. Send frame metadata JSON (includes remote cursor position)
-                await self.ws.send_text(
-                    json.dumps(
-                        {
-                            "type": "frame_meta",
-                            "seq": self.frame_seq,
-                            "width": meta["width"],
-                            "height": meta["height"],
-                            "scaled_width": meta["scaled_width"],
-                            "scaled_height": meta["scaled_height"],
-                            "format": meta["format"],
-                            "size": meta["bytes_size"],
-                            "cursor_x": meta.get("cursor_x", 0.5),
-                            "cursor_y": meta.get("cursor_y", 0.5),
-                            "timestamp": meta["timestamp"],
-                        }
+                    frame_bytes, frame_type, meta = await asyncio.to_thread(
+                        self.screen.capture_delta_frame,
+                        self.delta_state,
+                        self.monitor_index,
+                        self.format,
+                        self.quality,
+                        eff_scale,
+                        self.subsampling,
+                        need_kf,
                     )
-                )
 
-                # 2. Send binary frame bytes
-                await self.ws.send_bytes(frame_bytes)
+                    if frame_type in (FRAME_KEYFRAME, FRAME_SETTLING):
+                        self.force_keyframe = False
+
+                    cx_u16 = max(0, min(65535, int(round(meta.get("cursor_x", 0.5) * 65535.0))))
+                    cy_u16 = max(0, min(65535, int(round(meta.get("cursor_y", 0.5) * 65535.0))))
+
+                    if frame_type == FRAME_CURSOR_ONLY:
+                        if not meta.get("cursor_moved", False):
+                            continue
+                        header = RDP2_HEADER.pack(
+                            b"RDP2",
+                            FRAME_CURSOR_ONLY,
+                            FORMAT_CODE_NONE,
+                            0,  # seq=0 does not consume inflight ack window
+                            min(65535, meta["full_w"]),
+                            min(65535, meta["full_h"]),
+                            0,
+                            0,
+                            0,
+                            0,
+                            cx_u16,
+                            cy_u16,
+                            min(65535, meta["orig_w"]),
+                            min(65535, meta["orig_h"]),
+                        )
+                        await self._send_bytes(header)
+                        continue
+
+                    self.frame_seq += 1
+                    self._last_sent_time = time.perf_counter()
+                    fmt_code = FORMAT_CODE_WEBP if meta["format"] == "webp" else FORMAT_CODE_JPEG
+                    header = RDP2_HEADER.pack(
+                        b"RDP2",
+                        frame_type,
+                        fmt_code,
+                        self.frame_seq,
+                        min(65535, meta["full_w"]),
+                        min(65535, meta["full_h"]),
+                        min(65535, meta["rect_x"]),
+                        min(65535, meta["rect_y"]),
+                        min(65535, meta["rect_w"]),
+                        min(65535, meta["rect_h"]),
+                        cx_u16,
+                        cy_u16,
+                        min(65535, meta["orig_w"]),
+                        min(65535, meta["orig_h"]),
+                    )
+                    await self._send_bytes(header + frame_bytes)
+                else:
+                    # Legacy 2-message protocol (JSON metadata + binary frame) for backward compatibility
+                    frame_bytes, has_changed, meta = await asyncio.to_thread(self.screen.capture_frame)
+
+                    if (
+                        self.skip_static_frames
+                        and self.frame_seq > 1
+                        and not has_changed
+                        and (time.perf_counter() - self._last_sent_time) < 1.5
+                    ):
+                        continue
+
+                    self.frame_seq += 1
+                    self._last_sent_time = time.perf_counter()
+                    meta["seq"] = self.frame_seq
+
+                    async with self._ws_send_lock:
+                        await self.ws.send_text(
+                            json.dumps(
+                                {
+                                    "type": "frame_meta",
+                                    "seq": self.frame_seq,
+                                    "width": meta["width"],
+                                    "height": meta["height"],
+                                    "scaled_width": meta["scaled_width"],
+                                    "scaled_height": meta["scaled_height"],
+                                    "format": meta["format"],
+                                    "size": meta["bytes_size"],
+                                    "cursor_x": meta.get("cursor_x", 0.5),
+                                    "cursor_y": meta.get("cursor_y", 0.5),
+                                    "timestamp": meta["timestamp"],
+                                }
+                            )
+                        )
+                        await self.ws.send_bytes(frame_bytes)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in streaming loop: {e}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
 
     async def _audio_streaming_loop(self) -> None:
         """Streams remote audio chunks when audio is unmuted and permitted."""
@@ -178,7 +284,7 @@ class ClientSession:
             try:
                 if not self.audio.muted and self._perm_allowed("allow_audio"):
                     chunk = await asyncio.to_thread(self.audio.capture_audio_chunk, 180)
-                    await self.ws.send_text(json.dumps(chunk))
+                    await self._send_text(json.dumps(chunk))
                     await asyncio.sleep(0.18)
                 else:
                     await asyncio.sleep(0.5)
@@ -201,27 +307,38 @@ class ClientSession:
                 logger.debug(f"Error handling client message: {e}")
 
     def _adjust_adaptive_quality(self, rtt_ms: float) -> None:
-        """Dynamically adjust quality and FPS based on network RTT latency (RustDesk Auto Quality)."""
+        """
+        Motion-aware adaptive quality controller.
+        Preserves native 1:1 resolution during normal RTT spikes and relies on automatic 220ms
+        4:4:4 q=92 settling frames so static desktop text is always razor-sharp.
+        """
         if not self.adaptive_quality:
+            self.active_scale = self.user_scale
             return
-        if rtt_ms < 25:
-            self.screen.quality = 80
-            self.fps = 45
-        elif rtt_ms < 75:
-            self.screen.quality = 65
-            self.fps = 30
-        elif rtt_ms < 150:
-            self.screen.quality = 50
-            self.fps = 20
+
+        inflight = max(0, self.frame_seq - self.last_client_ack_seq)
+        if inflight <= 3 and rtt_ms < 60:
+            self.fps = 60
+            self.quality = 82
+            self.subsampling = 0
+            self.active_scale = self.user_scale
+        elif inflight <= 8:
+            self.fps = 55 if rtt_ms < 150 else 45
+            self.quality = 76
+            self.subsampling = 2  # Fast motion encode; auto-refines to 4:4:4 q=92 220ms after motion stops
+            self.active_scale = self.user_scale
         else:
-            self.screen.quality = 35
-            self.fps = 15
+            # Sustained bandwidth congestion -> slight scale step-down while keeping readable text
+            self.fps = 35
+            self.quality = 70
+            self.subsampling = 2
+            self.active_scale = min(self.user_scale, 0.85)
 
     async def _process_client_message(self, msg: Dict[str, Any]) -> None:
         """Dispatch client commands to core modules while enforcing host permissions."""
         msg_type = msg.get("type")
 
-        # 1. Frame acknowledgment for backpressure
+        # 1. Frame acknowledgment for sliding-window flow control
         if msg_type == "ack":
             seq = msg.get("seq", 0)
             if seq > self.last_client_ack_seq:
@@ -233,7 +350,7 @@ class ClientSession:
             if "last_rtt" in msg:
                 self.last_rtt_ms = float(msg["last_rtt"])
                 self._adjust_adaptive_quality(self.last_rtt_ms)
-            await self.ws.send_text(
+            await self._send_text(
                 json.dumps(
                     {
                         "type": "pong",
@@ -244,11 +361,22 @@ class ClientSession:
             )
 
         # 3. Mouse & Keyboard Input (requires allow_keyboard_mouse permission)
-        elif msg_type in ("mousemove", "mousemove_rel", "mousedown", "mouseup", "click", "wheel", "keydown", "keyup", "type_text", "special"):
+        elif msg_type in (
+            "mousemove",
+            "mousemove_rel",
+            "mousedown",
+            "mouseup",
+            "click",
+            "wheel",
+            "keydown",
+            "keyup",
+            "type_text",
+            "special",
+        ):
             if not self._perm_allowed("allow_keyboard_mouse"):
                 return
 
-            mon_rect = self.screen.get_current_monitor_rect()
+            mon_rect = self.screen.get_monitor_rect_by_index(self.monitor_index)
             nx = msg.get("x") if isinstance(msg.get("x"), (int, float)) else None
             ny = msg.get("y") if isinstance(msg.get("y"), (int, float)) else None
 
@@ -278,7 +406,7 @@ class ClientSession:
         # 4. View-Only Toggle
         elif msg_type == "set_view_only":
             self.input.view_only = bool(msg.get("view_only", False))
-            await self.ws.send_text(
+            await self._send_text(
                 json.dumps(
                     {
                         "type": "view_only_status",
@@ -292,7 +420,7 @@ class ClientSession:
             if self._perm_allowed("privacy_mode_allowed"):
                 enable = bool(msg.get("enabled", False))
                 status = self.privacy.set_privacy_mode(enable)
-                await self.ws.send_text(
+                await self._send_text(
                     json.dumps(
                         {
                             "type": "privacy_mode_status",
@@ -306,7 +434,7 @@ class ClientSession:
         elif msg_type == "audio_toggle":
             muted = bool(msg.get("muted", True))
             self.audio.set_muted(muted)
-            await self.ws.send_text(
+            await self._send_text(
                 json.dumps(
                     {
                         "type": "audio_status",
@@ -320,7 +448,7 @@ class ClientSession:
             text = msg.get("text", "").strip()
             sender = msg.get("sender", "Client")
             if text:
-                await self.ws.send_text(
+                await self._send_text(
                     json.dumps(
                         {
                             "type": "chat_message",
@@ -331,35 +459,64 @@ class ClientSession:
                     )
                 )
 
-        # 8. Dynamic Stream Quality, Adaptive Bitrate & FPS Configuration
+        # 8. Dynamic Stream Quality, Resolution Scale, Chroma Subsampling & FPS Configuration
         elif msg_type == "config":
+            if msg.get("proto") == "rdp2":
+                self.use_rdp2 = True
+                self.max_inflight_frames = 12
+                self.force_keyframe = True
             if "adaptive" in msg:
                 self.adaptive_quality = bool(msg["adaptive"])
+                if not self.adaptive_quality:
+                    self.active_scale = self.user_scale
             if "skip_static" in msg:
                 self.skip_static_frames = bool(msg["skip_static"])
             if "fps" in msg:
                 self.fps = max(5, min(60, int(msg["fps"])))
             if "quality" in msg:
-                self.screen.quality = max(10, min(100, int(msg["quality"])))
+                self.quality = max(10, min(100, int(msg["quality"])))
+                if not self.use_rdp2:
+                    self.screen.quality = self.quality
+                self.force_keyframe = True
             if "scale" in msg:
-                self.screen.scale = max(0.25, min(1.0, float(msg["scale"])))
+                self.user_scale = max(0.25, min(1.0, float(msg["scale"])))
+                self.active_scale = self.user_scale
+                if not self.use_rdp2:
+                    self.screen.scale = self.user_scale
+                self.force_keyframe = True
+            if "subsampling" in msg:
+                sub = int(msg["subsampling"])
+                if sub in (0, 1, 2):
+                    self.subsampling = sub
+                    self.force_keyframe = True
             if "format" in msg:
                 fmt = str(msg["format"]).lower()
+                if fmt == "jpg":
+                    fmt = "jpeg"
                 if fmt in ("webp", "jpeg"):
-                    self.screen.format = fmt
+                    self.format = fmt
+                    if not self.use_rdp2:
+                        self.screen.format = fmt
+                    self.force_keyframe = True
             if "monitor" in msg:
                 mon_idx = int(msg["monitor"])
-                self.screen.set_monitor(mon_idx)
+                if self.screen.set_monitor(mon_idx):
+                    self.monitor_index = mon_idx
+                    self.delta_state.reset()
+                    self.force_keyframe = True
+            if msg.get("force_keyframe"):
+                self.force_keyframe = True
 
-            await self.ws.send_text(
+            await self._send_text(
                 json.dumps(
                     {
                         "type": "config_updated",
                         "fps": self.fps,
-                        "quality": self.screen.quality,
-                        "scale": self.screen.scale,
-                        "format": self.screen.format,
-                        "monitor": self.screen.monitor_index,
+                        "quality": self.quality,
+                        "scale": self.user_scale,
+                        "subsampling": self.subsampling,
+                        "format": self.format,
+                        "monitor": self.monitor_index,
                         "adaptive": self.adaptive_quality,
                     }
                 )
@@ -379,7 +536,7 @@ class ClientSession:
                 if self._perm_allowed("allow_clipboard"):
                     new_text = self.clipboard.has_changed()
                     if new_text is not None:
-                        await self.ws.send_text(
+                        await self._send_text(
                             json.dumps(
                                 {
                                     "type": "clipboard_sync",

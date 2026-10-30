@@ -18,7 +18,7 @@ class InputController {
     this.lastMouseMoveTime = 0;
     this.mouseMoveThrottleMs = 12; // ~80Hz max update rate
 
-    // Touch & Mobile Trackpad tracking
+    // Touch, Pinch-to-Zoom & Mobile Trackpad tracking
     this.touchMode = localStorage.getItem('rd_touch_mode') || 'touch'; // 'touch' | 'trackpad'
     this.lastTouchPos = null;
     this.lastRawTouch = null;
@@ -28,6 +28,10 @@ class InputController {
     this.maxTouchesInGesture = 0;
     this.longPressTimer = null;
     this.longPressTriggered = false;
+    this.initialPinchDist = 0;
+    this.initialPinchZoom = 1.0;
+    this.lastPinchMid = null;
+    this.isPinchZooming = false;
 
     this.initEventListeners();
     this.initDragAndDrop();
@@ -282,8 +286,20 @@ class InputController {
   }
 
   onWheel(e) {
-    if (!this.enabled || this.viewOnly) return;
+    if (!this.enabled) return;
     e.preventDefault();
+
+    // Ctrl + Alt + Wheel -> Local High-DPI Viewport Zoom (1.0x - 4.0x)
+    if (e.ctrlKey && e.altKey) {
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const z = this.renderer.setZoom(this.renderer.zoom * factor, e.clientX, e.clientY);
+      if (window.app && typeof window.app.onZoomChanged === 'function') {
+        window.app.onZoomChanged(z);
+      }
+      return;
+    }
+
+    if (this.viewOnly) return;
 
     this.send({
       type: 'wheel',
@@ -347,7 +363,7 @@ class InputController {
   }
 
   onTouchStart(e) {
-    if (!this.enabled || this.viewOnly || e.touches.length === 0) return;
+    if (!this.enabled || e.touches.length === 0) return;
     e.preventDefault();
 
     this.clearLongPress();
@@ -355,6 +371,22 @@ class InputController {
     this.touchMovedDistance = 0;
     this.longPressTriggered = false;
     this.maxTouchesInGesture = Math.max(this.maxTouchesInGesture, e.touches.length);
+
+    if (e.touches.length === 2) {
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      this.initialPinchDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      this.initialPinchZoom = this.renderer.zoom || 1.0;
+      this.lastPinchMid = {
+        x: (t0.clientX + t1.clientX) / 2,
+        y: (t0.clientY + t1.clientY) / 2,
+      };
+      this.isPinchZooming = false;
+      this.lastRawTouch = { x: t0.clientX, y: t0.clientY };
+      return;
+    }
+
+    if (this.viewOnly) return;
 
     const touch = e.touches[0];
     this.lastRawTouch = { x: touch.clientX, y: touch.clientY };
@@ -386,8 +418,53 @@ class InputController {
   }
 
   onTouchMove(e) {
-    if (!this.enabled || this.viewOnly || !this.lastRawTouch) return;
+    if (!this.enabled || !this.lastRawTouch) return;
     e.preventDefault();
+
+    if (e.touches.length === 2) {
+      this.clearLongPress();
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      const midX = (t0.clientX + t1.clientX) / 2;
+      const midY = (t0.clientY + t1.clientY) / 2;
+
+      if (this.initialPinchDist > 10 && Math.abs(dist - this.initialPinchDist) > 12) {
+        this.isPinchZooming = true;
+      }
+
+      if (this.isPinchZooming && this.initialPinchDist > 10) {
+        const targetZoom = this.initialPinchZoom * (dist / this.initialPinchDist);
+        const z = this.renderer.setZoom(targetZoom, midX, midY);
+        if (this.lastPinchMid) {
+          this.renderer.panBy(midX - this.lastPinchMid.x, midY - this.lastPinchMid.y);
+        }
+        if (window.app && typeof window.app.onZoomChanged === 'function') {
+          window.app.onZoomChanged(z);
+        }
+      } else if (this.renderer.zoom > 1.02 && this.lastPinchMid) {
+        // Two-finger pan across zoomed desktop
+        this.renderer.panBy(midX - this.lastPinchMid.x, midY - this.lastPinchMid.y);
+      } else if (!this.viewOnly) {
+        // Two-finger vertical mouse wheel scroll when at 1.0x zoom
+        const rawDy = t0.clientY - this.lastRawTouch.y;
+        const scrollDy = rawDy * 3.5;
+        if (Math.abs(scrollDy) > 1) {
+          this.send({
+            type: 'wheel',
+            dx: 0,
+            dy: -Math.round(scrollDy),
+          });
+        }
+      }
+
+      this.touchMovedDistance += 20;
+      this.lastPinchMid = { x: midX, y: midY };
+      this.lastRawTouch = { x: t0.clientX, y: t0.clientY };
+      return;
+    }
+
+    if (this.viewOnly) return;
 
     const touch = e.touches[0];
     const rawDx = touch.clientX - this.lastRawTouch.x;
@@ -418,30 +495,19 @@ class InputController {
         }
         this.lastTouchPos = coords;
       }
-    } else if (e.touches.length === 2) {
-      // Two-finger vertical scroll
-      this.clearLongPress();
-      const scrollDy = rawDy * 3.5;
-      if (Math.abs(scrollDy) > 1) {
-        this.send({
-          type: 'wheel',
-          dx: 0,
-          dy: -Math.round(scrollDy),
-        });
-      }
     }
 
     this.lastRawTouch = { x: touch.clientX, y: touch.clientY };
   }
 
   onTouchEnd(e) {
-    if (!this.enabled || this.viewOnly) return;
+    if (!this.enabled) return;
     e.preventDefault();
 
     this.clearLongPress();
     const duration = performance.now() - this.touchStartTime;
 
-    if (!this.longPressTriggered) {
+    if (!this.viewOnly && !this.longPressTriggered && !this.isPinchZooming) {
       if (this.maxTouchesInGesture === 2 && duration < 300 && this.touchMovedDistance < 24) {
         // Two-finger tap -> Right Click
         this.vibrate(30);
@@ -469,9 +535,15 @@ class InputController {
       }
     }
 
-    if (e.touches.length === 0) {
+    if (e.touches.length === 1) {
+      this.lastRawTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      this.isPinchZooming = false;
+    } else if (e.touches.length === 0) {
       this.lastTouchPos = null;
       this.lastRawTouch = null;
+      this.lastPinchMid = null;
+      this.initialPinchDist = 0;
+      this.isPinchZooming = false;
       this.maxTouchesInGesture = 0;
     }
   }

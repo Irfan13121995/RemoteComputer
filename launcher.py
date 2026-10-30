@@ -97,9 +97,9 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically launch desktop/browser window")
     parser.add_argument("--tray", action="store_true", help="Start minimized in Windows System Tray (used for Windows Startup)")
     parser.add_argument("--browser-mode", action="store_true", help="Open in standard browser tab instead of frameless native app window")
-    parser.add_argument("--fps", type=int, default=30, help="Target max FPS (default: 30)")
-    parser.add_argument("--quality", type=int, default=70, help="Image compression quality (10-95, default: 70)")
-    parser.add_argument("--format", type=str, default="webp", choices=["webp", "jpeg"], help="Frame format (webp/jpeg)")
+    parser.add_argument("--fps", type=int, default=60, help="Target max FPS (default: 60)")
+    parser.add_argument("--quality", type=int, default=80, help="Image compression quality (10-100, default: 80)")
+    parser.add_argument("--format", type=str, default="jpeg", choices=["jpeg", "webp"], help="Frame format (jpeg/webp, default: jpeg)")
     parser.add_argument("--scale", type=float, default=1.0, help="Resolution scale factor (0.25 - 1.0, default: 1.0)")
     parser.add_argument("--cert-dir", type=str, default="certs", help="Directory for TLS certificates")
 
@@ -209,13 +209,14 @@ def main():
         t = threading.Thread(target=auto_open_window, args=(dashboard_url, use_native), daemon=True)
         t.start()
 
-    # Run Uvicorn Server
+    # Run Uvicorn Server (disable ws_per_message_deflate to eliminate main-thread zlib CPU stalls on JPEG/WebP frames)
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         ssl_certfile=ssl_certfile if args.ssl else None,
         ssl_keyfile=ssl_keyfile if args.ssl else None,
+        ws_per_message_deflate=False,
         log_level="info",
     )
 

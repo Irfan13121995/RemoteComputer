@@ -542,26 +542,26 @@
                 <div class="feature-item">
                   <div>
                     <div style="font-weight: 600;">Image Encoding Format</div>
-                    <div style="font-size: 11px; color: var(--text-secondary);">WebP for low bandwidth; JPEG for low CPU</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">JPEG Turbo 4:4:4 for 60 FPS &amp; crisp text; WebP for extra compression</div>
                   </div>
-                  <select id="hub-setting-format" class="tb-select" style="min-width: 140px;">
-                    <option value="webp" selected>WebP (Recommended)</option>
-                    <option value="jpeg">JPEG</option>
+                  <select id="hub-setting-format" class="tb-select" style="min-width: 170px;">
+                    <option value="jpeg" selected>JPEG Turbo 4:4:4 (Recommended)</option>
+                    <option value="webp">WebP</option>
                   </select>
                 </div>
 
                 <div class="feature-item">
                   <div>
-                    <div style="font-weight: 600;">Quality: <span id="hub-val-quality" style="color: var(--accent);">70%</span></div>
+                    <div style="font-weight: 600;">Quality: <span id="hub-val-quality" style="color: var(--accent);">80%</span></div>
                   </div>
-                  <input id="hub-setting-quality" type="range" min="20" max="95" value="70" style="accent-color: var(--accent);" />
+                  <input id="hub-setting-quality" type="range" min="20" max="100" value="80" style="accent-color: var(--accent);" />
                 </div>
 
                 <div class="feature-item">
                   <div>
-                    <div style="font-weight: 600;">Frame Rate: <span id="hub-val-fps" style="color: var(--accent);">30 FPS</span></div>
+                    <div style="font-weight: 600;">Frame Rate: <span id="hub-val-fps" style="color: var(--accent);">60 FPS</span></div>
                   </div>
-                  <input id="hub-setting-fps" type="range" min="10" max="60" step="5" value="30" style="accent-color: var(--accent);" />
+                  <input id="hub-setting-fps" type="range" min="10" max="60" step="5" value="60" style="accent-color: var(--accent);" />
                 </div>
 
                 <div class="feature-item">
@@ -577,7 +577,7 @@
 
                 <div class="feature-item">
                   <span>⚡ Static Frame Skipping (0 KB/s when desktop idle)</span>
-                  <input type="checkbox" id="hub-setting-skip-static" style="accent-color: var(--accent);" />
+                  <input type="checkbox" id="hub-setting-skip-static" checked style="accent-color: var(--accent);" />
                 </div>
 
                 <div class="feature-item">
@@ -644,6 +644,7 @@
           <span id="session-status-dot" class="status-dot"></span>
           <span id="session-latency-badge" class="tb-badge" title="Round Trip Latency">-- ms</span>
           <span id="session-fps-badge" class="tb-badge" title="Frame Rate">-- FPS</span>
+          <span id="session-res-badge" class="tb-badge" title="Active Stream Resolution">1920×1080</span>
           <span id="session-bandwidth-badge" class="tb-badge" title="Bandwidth Usage">-- KB/s</span>
           <span id="recording-badge" class="tb-badge hidden" style="border-color: var(--red); color: var(--red);">
             <span class="rec-pulse"></span> REC
@@ -657,13 +658,26 @@
           <option value="1">Display 1 (Primary)</option>
         </select>
 
+        <!-- Resolution Scale Selector -->
+        <select id="session-resolution-select" class="tb-select" title="Stream Resolution Scale">
+          <option value="1.0" selected>100% Native 1:1</option>
+          <option value="0.85">85% Sharp</option>
+          <option value="0.75">75% HD+</option>
+          <option value="0.5">50% Fast</option>
+        </select>
+
         <!-- Quality Preset -->
         <select id="session-quality-select" class="tb-select" title="Stream Quality Preset">
+          <option value="ultra" selected>✨ Ultra Crisp 4:4:4 (60 FPS)</option>
           <option value="auto">⚡ Auto Adaptive</option>
-          <option value="high">High (60 FPS)</option>
-          <option value="balanced" selected>Balanced (30 FPS)</option>
-          <option value="low">Low Bandwidth (20 FPS)</option>
+          <option value="high">High Clarity (60 FPS)</option>
+          <option value="balanced">Balanced (45 FPS)</option>
+          <option value="low">Low Bandwidth (30 FPS)</option>
         </select>
+
+        <button id="btn-session-zoom-reset" class="tb-btn hidden" title="Reset Pinch Zoom to 100%">
+          <span>🔍</span> 1.0x
+        </button>
 
         <div class="tb-divider"></div>
 
